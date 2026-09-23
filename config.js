@@ -56,6 +56,9 @@ module.exports = {
   downloadTimeoutMs: 3 * 60 * 1000,
   maxConcurrentDownloads: 2,
 
+  // Konfigurasi API Server
+  apiPort: process.env.PORT || 3000,
+
   // Donasi
   donate: {
     name: 'RAHMAT HAIKAL',

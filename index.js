@@ -8,6 +8,8 @@ const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
 const fs = require('fs');
 const path = require('path');
+const express = require('express');
+const cors = require('cors');
 
 const config = require('./config');
 const db = require('./lib/database');
@@ -24,6 +26,10 @@ const { handleMessage } = require('./handler');
 
 // Waktu mulai bot untuk kalkulasi uptime
 const startTime = Date.now();
+
+// Instance aktif Baileys Socket untuk API
+let currentSock = null;
+let apiServer = null;
 
 // Pastikan semua folder yang dibutuhkan siap
 ensureDirs([config.sessionDir, config.tempDir, config.downloadDir]);
@@ -78,6 +84,7 @@ async function startBot() {
 
     // Ketika bot berhasil terhubung
     if (connection === 'open') {
+      currentSock = sock;
       const rawNumber = sock.user?.id || '';
       const botNumber = rawNumber ? '+' + rawNumber.split(':')[0] : 'Unknown';
 
@@ -91,6 +98,7 @@ async function startBot() {
 
     // Ketika koneksi terputus
     if (connection === 'close') {
+      currentSock = null;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
@@ -155,10 +163,82 @@ async function startBot() {
   });
 }
 
+/**
+ * Inisialisasi Express API Server untuk menerima trigger pesan dari Web Tugas Kuliah / service eksternal
+ */
+function initApiServer() {
+  if (apiServer) return;
+
+  const app = express();
+  app.use(cors());
+  app.use(express.json());
+
+  // Health check & status bot
+  app.get('/api/status', (req, res) => {
+    res.json({
+      status: true,
+      botReady: !!currentSock,
+      uptime: formatUptime(process.uptime()),
+      botName: config.botName
+    });
+  });
+
+  // Endpoint untuk menerima kiriman pesan ke WhatsApp grup atau kontak
+  app.post('/api/send-group', async (req, res) => {
+    try {
+      const { groupId, message } = req.body;
+
+      if (!groupId || !message) {
+        return res.status(400).json({
+          status: false,
+          error: 'Parameter "groupId" dan "message" wajib diisi!'
+        });
+      }
+
+      if (!currentSock) {
+        return res.status(503).json({
+          status: false,
+          error: 'SikanBot belum terhubung ke WhatsApp. Pastikan bot dalam status Online.'
+        });
+      }
+
+      // Pastikan suffix jid sesuai format WhatsApp
+      let targetJid = String(groupId).trim();
+      if (!targetJid.includes('@')) {
+        targetJid = targetJid + '@g.us';
+      }
+
+      await currentSock.sendMessage(targetJid, { text: message });
+
+      log('SUCCESS', `[API] Berhasil mengirim pesan notifikasi ke: ${targetJid}`);
+      return res.json({
+        status: true,
+        message: 'Pesan berhasil terkirim ke grup!'
+      });
+    } catch (err) {
+      log('ERROR', `[API Error] Gagal mengirim pesan via API: ${err.message}`);
+      return res.status(500).json({
+        status: false,
+        error: err.message
+      });
+    }
+  });
+
+  const port = config.apiPort || 3000;
+  apiServer = app.listen(port, '0.0.0.0', () => {
+    log('SUCCESS', `[API] Server HTTP SikanBot aktif di port ${port} (http://0.0.0.0:${port})`);
+  });
+}
+
 // Menangani shutdown graceful
 process.on('SIGINT', () => {
   console.log('\n');
   log('INFO', 'Menghentikan SikanBot...');
+  if (apiServer) {
+    try {
+      apiServer.close();
+    } catch (_) {}
+  }
   cleanDirectory(config.tempDir, 0);
   cleanDirectory(config.downloadDir, 0);
   db.saveNow();
@@ -173,5 +253,6 @@ process.on('unhandledRejection', (reason) => {
   log('ERROR', `Unhandled Rejection: ${reason}`);
 });
 
-// Jalankan SikanBot
+// Jalankan HTTP API Server & SikanBot
+initApiServer();
 startBot();
