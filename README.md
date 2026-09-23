@@ -54,9 +54,11 @@ Bot WhatsApp serbaguna, lengkap, dan modular yang dibangun dengan Node.js, Baile
 ├ .play
 ├ .play2
 ├ .yts
-├ .tt (tiktok)
+├ .tt / .tiktok (video & slide foto)
+├ .ttfoto / .tiktokfoto
 ├ .tiktokstalk
-├ .ig
+├ .ig / .reel (video, foto, carousel)
+├ .igstory / .story (unduh story IG)
 ├ .facebook
 ├ .twitter
 ├ .spotify

@@ -58,8 +58,9 @@ module.exports = {
 
   // Donasi
   donate: {
-    dana: '082277256004',
-    gopay: '082277256004',
+    name: 'RAHMAT HAIKAL',
+    dana: '082267034994',
+    gopay: '082267034994',
     saweria: 'https://saweria.co/sikancuyy'
   }
 };

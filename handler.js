@@ -1,11 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
+const axios = require('axios');
+const { downloadContentFromMessage, jidNormalizedUser } = require('@whiskeysockets/baileys');
 const config = require('./config');
 const db = require('./lib/database');
 const games = require('./lib/games');
 const scraper = require('./lib/scraper');
-const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker } = require('./lib/sticker');
+const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe } = require('./utils');
 const { downloadVideo } = require('./downloader');
 
@@ -25,6 +26,29 @@ async function getMediaBuffer(mediaObj, type) {
   }
 }
 
+// In-memory cache untuk group metadata (TTL 5 menit) agar bot tidak freeze / terkena rate limit
+const groupCache = new Map();
+
+async function getGroupMetadataSafe(sock, chatId) {
+  const cached = groupCache.get(chatId);
+  const now = Date.now();
+  if (cached && (now - cached.time < 5 * 60 * 1000)) {
+    return cached.data;
+  }
+  try {
+    const data = await Promise.race([
+      sock.groupMetadata(chatId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Group metadata timeout')), 3500))
+    ]);
+    if (data) {
+      groupCache.set(chatId, { data, time: now });
+    }
+    return data;
+  } catch (_) {
+    return cached?.data || null;
+  }
+}
+
 /**
  * Handler utama pesan WhatsApp
  */
@@ -33,11 +57,17 @@ async function handleMessage(sock, msg, startTime) {
 
   const chatId = msg.key.remoteJid;
   const isGroup = chatId.endsWith('@g.us');
-  const sender = isGroup ? (msg.key.participant || msg.participant) : chatId;
-  const senderNumber = sender ? sender.split('@')[0] : '';
-  const isOwner = db.isOwner(sender);
-  const isPrem = db.isPremium(sender);
-  const isBanned = db.isBanned(sender);
+  const botNumber = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
+  const rawSender = msg.key.fromMe
+    ? (botNumber ? `${botNumber}@s.whatsapp.net` : (isGroup ? (msg.key.participant || msg.participant || chatId) : chatId))
+    : (isGroup ? (msg.key.participant || msg.participant || chatId) : chatId);
+  const normSender = jidNormalizedUser(rawSender || chatId);
+  const senderNumber = normSender.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  const sender = normSender.includes('@') ? normSender : (senderNumber ? `${senderNumber}@s.whatsapp.net` : rawSender);
+  const pushName = msg.pushName || 'Kak';
+  const isOwner = Boolean(msg.key.fromMe) || db.isOwner(sender) || (botNumber && senderNumber === botNumber);
+  const isPrem = isOwner || db.isPremium(sender);
+  const isBanned = isOwner ? false : db.isBanned(sender);
 
   // 1. Unwrap Baileys wrappers (ephemeralMessage, viewOnceMessage, viewOnceMessageV2, documentWithCaptionMessage)
   let rawMessage = msg.message;
@@ -80,9 +110,44 @@ async function handleMessage(sock, msg, startTime) {
     ''
   ).trim();
 
-  // Objek helper reply
+  // Objek helper reply dengan auto-mention cerdas
   const reply = async (text, options = {}) => {
-    return await sock.sendMessage(chatId, { text, ...options }, { quoted: msg });
+    const textMentions = (String(text).match(/@(\d+)/g) || []).map((v) => `${v.slice(1)}@s.whatsapp.net`);
+    const combinedMentions = [...new Set([...(options.mentions || []), ...textMentions])];
+    const opts = { ...options };
+    if (combinedMentions.length > 0) {
+      opts.mentions = combinedMentions.map((j) => jidNormalizedUser(j));
+    }
+    try {
+      return await sock.sendMessage(chatId, { text, ...opts }, { quoted: msg });
+    } catch (_) {
+      return await sock.sendMessage(chatId, { text, ...opts });
+    }
+  };
+
+  // Helper kehadiran (WhatsApp typing presence dengan auto keep-alive agar tetap ada selama proses)
+  let typingInterval = null;
+  const setPresence = async (status) => {
+    if (status === 'composing') {
+      try {
+        await sock.sendPresenceUpdate('composing', chatId);
+      } catch (_) {}
+      if (!typingInterval) {
+        typingInterval = setInterval(async () => {
+          try {
+            await sock.sendPresenceUpdate('composing', chatId);
+          } catch (_) {}
+        }, 4000);
+      }
+    } else {
+      if (typingInterval) {
+        clearInterval(typingInterval);
+        typingInterval = null;
+      }
+      try {
+        await sock.sendPresenceUpdate('paused', chatId);
+      } catch (_) {}
+    }
   };
 
   // Cek apakah user diblokir/banned
@@ -93,43 +158,56 @@ async function handleMessage(sock, msg, startTime) {
     return;
   }
 
-  // Konfigurasi grup
+  // Konfigurasi grup (Lazy loaded agar command biasa tidak tertahan network)
+  const groupConfig = isGroup ? db.getGroup(chatId) : null;
   let groupMetadata = null;
-  let groupName = '';
+  let groupName = 'Grup';
   let groupMembers = [];
   let groupAdmins = [];
   let isBotAdmin = false;
-  let isAdmin = false;
+  let isAdmin = isOwner;
+  let groupLoaded = false;
 
-  if (isGroup) {
+  const loadGroupInfo = async () => {
+    if (!isGroup || groupLoaded) return;
+    groupLoaded = true;
     try {
-      groupMetadata = await sock.groupMetadata(chatId);
-      groupName = groupMetadata.subject;
-      groupMembers = groupMetadata.participants || [];
-      groupAdmins = groupMembers.filter((m) => m.admin).map((m) => m.id);
+      groupMetadata = await getGroupMetadataSafe(sock, chatId);
+      if (groupMetadata) {
+        groupName = groupMetadata.subject || 'Grup';
+        groupMembers = groupMetadata.participants || [];
+        groupAdmins = groupMembers.filter((m) => m.admin).map((m) => m.id);
 
-      const botJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net';
-      isBotAdmin = groupAdmins.includes(botJid);
-      isAdmin = groupAdmins.includes(sender);
-    } catch (_) { }
+        const botNum = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
+        const senderNum = (sender || '').split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+        const adminNums = groupAdmins.map((id) => id.split('@')[0].split(':')[0].replace(/[^0-9]/g, ''));
+        isBotAdmin = adminNums.includes(botNum);
+        isAdmin = isOwner || adminNums.includes(senderNum);
+      }
+    } catch (_) {
+      isAdmin = isOwner;
+    }
+  };
 
-    const groupConfig = db.getGroup(chatId);
-
-    // 1. Antilink Protection
-    if (groupConfig.antilink && !isAdmin && !isOwner) {
+  if (isGroup && groupConfig) {
+    // 1. Antilink Protection (hanya jika diaktifkan)
+    if (groupConfig.antilink) {
       const linkRegex = /(chat\.whatsapp\.com\/[0-9A-Za-z]{20,24})/i;
       if (linkRegex.test(body)) {
-        await sock.sendMessage(chatId, {
-          text: `⚠️ *ANTI LINK DETECTED*\n\nMaaf @${senderNumber}, tautan grup WhatsApp dilarang di sini!`,
-          mentions: [sender]
-        }, { quoted: msg });
+        await loadGroupInfo();
+        if (!isAdmin && !isOwner) {
+          await sock.sendMessage(chatId, {
+            text: `⚠️ *ANTI LINK DETECTED*\n\nMaaf @${senderNumber}, tautan grup WhatsApp dilarang di sini!`,
+            mentions: [sender]
+          }, { quoted: msg });
 
-        if (isBotAdmin) {
-          try {
-            await sock.sendMessage(chatId, { delete: msg.key });
-          } catch (_) { }
+          if (isBotAdmin) {
+            try {
+              await sock.sendMessage(chatId, { delete: msg.key });
+            } catch (_) { }
+          }
+          return;
         }
-        return;
       }
     }
   }
@@ -180,13 +258,117 @@ async function handleMessage(sock, msg, startTime) {
   // Cek Prefix
   const matchedPrefix = config.prefixes.find((p) => body.startsWith(p));
   if (!matchedPrefix) {
-    // Deteksi URL video otomatis di private chat
+    // Deteksi URL media otomatis (berjalan di private chat dan di grup)
     const urlMatch = body.match(/https?:\/\/[^\s]+/i);
-    if (urlMatch && !isGroup) {
-      const detectedUrl = urlMatch[0];
-      const requestId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    if (urlMatch) {
+      await setPresence('composing');
       try {
-        await reply('⏳ Sedang memproses link video Anda...');
+        const detectedUrl = urlMatch[0];
+        const requestId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+
+        // Jika link adalah TikTok, periksa apakah berupa slide foto atau video
+        if (/tiktok\.com/i.test(detectedUrl)) {
+          try {
+            const data = await scraper.getTikTok(detectedUrl);
+            if (data.isSlide || (Array.isArray(data.images) && data.images.length > 0)) {
+              const totalPhotos = data.images.length;
+              for (let i = 0; i < totalPhotos; i++) {
+                const imgUrl = data.images[i];
+                const isFirst = i === 0;
+                const caption = isFirst
+                  ? `✨ *TikTok Slide Foto (${totalPhotos} Foto)*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}\n\n📷 Foto [1/${totalPhotos}]`
+                  : `📷 Foto [${i + 1}/${totalPhotos}]`;
+                try {
+                  const imgRes = await axios.get(imgUrl, {
+                    responseType: 'arraybuffer',
+                    timeout: 15000,
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                  });
+                  await sock.sendMessage(chatId, { image: Buffer.from(imgRes.data), caption }, { quoted: isFirst ? msg : undefined });
+                } catch (_) {
+                  await sock.sendMessage(chatId, { image: { url: imgUrl }, caption }, { quoted: isFirst ? msg : undefined });
+                }
+                if (i < totalPhotos - 1) await new Promise((r) => setTimeout(r, 800));
+              }
+              if (data.audioUrl) {
+                try {
+                  await sock.sendMessage(chatId, { audio: { url: data.audioUrl }, mimetype: 'audio/mp4' }, { quoted: msg });
+                } catch (_) {}
+              }
+              return;
+            } else if (data.videoUrl) {
+              await sock.sendMessage(chatId, {
+                video: { url: data.videoUrl },
+                caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}`
+              }, { quoted: msg });
+              return;
+            }
+          } catch (_) {
+            // Lanjut ke fallback jika getTikTok gagal
+          }
+        }
+
+        // Jika link adalah Instagram (Reel, Post, Carousel Foto & Video, Story)
+        if (/instagram\.com/i.test(detectedUrl)) {
+          try {
+            const isStory = /instagram\.com\/stories\//i.test(detectedUrl);
+            const data = isStory
+              ? await scraper.getInstagramStory(detectedUrl)
+              : await scraper.getInstagram(detectedUrl);
+
+            if (data && Array.isArray(data.media) && data.media.length > 0) {
+              const totalMedia = data.media.length;
+              for (let i = 0; i < totalMedia; i++) {
+                const item = data.media[i];
+                const isFirst = i === 0;
+                const caption = totalMedia > 1
+                  ? (isFirst ? `✨ *Instagram Carousel (${totalMedia} Media)*\n\n${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]` : `${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]`)
+                  : (isStory ? `✨ *Instagram Story*` : `✨ *Instagram Downloader*`);
+
+                try {
+                  const mediaRes = await axios.get(item.url, {
+                    responseType: 'arraybuffer',
+                    timeout: 30000,
+                    headers: {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                      'Referer': 'https://www.instagram.com/'
+                    }
+                  });
+                  const buffer = Buffer.from(mediaRes.data);
+                  const contentType = String(mediaRes.headers['content-type'] || '').toLowerCase();
+                  const isVideo = contentType.includes('video') || item.type === 'video' || (buffer.length >= 8 && buffer.slice(4, 8).toString('ascii') === 'ftyp') || /\.mp4/i.test(item.url);
+
+                  if (isVideo) {
+                    await sock.sendMessage(chatId, {
+                      video: buffer,
+                      caption,
+                      mimetype: 'video/mp4'
+                    }, { quoted: isFirst ? msg : undefined });
+                  } else {
+                    await sock.sendMessage(chatId, {
+                      image: buffer,
+                      caption
+                    }, { quoted: isFirst ? msg : undefined });
+                  }
+                } catch (_) {
+                  try {
+                    if (item.type === 'video') {
+                      await sock.sendMessage(chatId, { video: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
+                    } else {
+                      await sock.sendMessage(chatId, { image: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
+                    }
+                  } catch (e2) {}
+                }
+
+                if (i < totalMedia - 1) await new Promise((r) => setTimeout(r, 800));
+              }
+              return;
+            }
+          } catch (_) {
+            // Lanjut ke fallback yt-dlp jika getInstagram gagal
+          }
+        }
+
         const result = await downloadVideo(detectedUrl, requestId);
         const videoBuffer = fs.readFileSync(result.filePath);
         await sock.sendMessage(chatId, {
@@ -195,7 +377,10 @@ async function handleMessage(sock, msg, startTime) {
           mimetype: 'video/mp4'
         }, { quoted: msg });
         deleteFileSafe(result.filePath);
-      } catch (e) { }
+      } catch (e) {
+      } finally {
+        await setPresence('paused');
+      }
     }
     return;
   }
@@ -209,9 +394,24 @@ async function handleMessage(sock, msg, startTime) {
   const aliases = {
     // Download
     'tt': 'tiktok',
+    'ttfoto': 'tiktok',
+    'tiktokfoto': 'tiktok',
+    'ttslide': 'tiktok',
+    'tiktokslide': 'tiktok',
     'ttstalk': 'tiktokstalk',
     'stalktt': 'tiktokstalk',
     'instagram': 'ig',
+    'igdl': 'ig',
+    'igpost': 'ig',
+    'reel': 'ig',
+    'reels': 'ig',
+    'igreel': 'ig',
+    'igreels': 'ig',
+    'igstory': 'igstory',
+    'story': 'igstory',
+    'storyig': 'igstory',
+    'igs': 'igstory',
+    'instastory': 'igstory',
     'fb': 'facebook',
     'tw': 'twitter',
     'x': 'twitter',
@@ -232,6 +432,11 @@ async function handleMessage(sock, msg, startTime) {
     'stiker': 'sticker',
     'wm': 'take',
     'buka': 'toimg',
+    'tovideo': 'tovid',
+    'bratvideo': 'bratvid',
+    'bratgif': 'bratvid',
+    'bratv': 'bratvid',
+    'bratanim': 'bratvid',
     // Tools
     'qr': 'qrcode',
     'short': 'shorturl',
@@ -249,7 +454,11 @@ async function handleMessage(sock, msg, startTime) {
     'ringkas': 'summarize',
     // Bot
     'info': 'infobot',
-    'start': 'menu'
+    'start': 'menu',
+    'donasi': 'donate',
+    'ceklimit': 'limit',
+    'limitgc': 'limit',
+    'limitgrup': 'limit'
   };
 
   if (aliases[command]) {
@@ -260,8 +469,12 @@ async function handleMessage(sock, msg, startTime) {
   const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage || null;
   const quotedType = quoted ? Object.keys(quoted)[0] : null;
 
+  if (!command) return;
+
   db.incrementHit();
 
+  await setPresence('composing');
+  try {
   /* ====================================================================
    * 1. 🤖 BOT MENU
    * ==================================================================== */
@@ -289,9 +502,11 @@ async function handleMessage(sock, msg, startTime) {
 ├ .play
 ├ .play2
 ├ .yts
-├ .tt (tiktok)
+├ .tt / .tiktok (video & slide foto)
+├ .ttfoto / .tiktokfoto
 ├ .tiktokstalk
-├ .ig
+├ .ig / .reel (video, foto, carousel)
+├ .igstory / .story (unduh story IG)
 ├ .facebook
 ├ .twitter
 ├ .spotify
@@ -338,6 +553,7 @@ async function handleMessage(sock, msg, startTime) {
 ├ .tovid
 ├ .attp
 ├ .brat
+├ .bratvid / .bratgif
 ╰──────────────
 
 ╭───〔 🛠️ TOOLS 〕
@@ -397,16 +613,16 @@ async function handleMessage(sock, msg, startTime) {
 ╰──────────────
 `.trim();
 
-    const banner = `👋 Halo @${senderNumber}!\nSelamat datang di *${config.botName}*.\nPrefix: *${config.prefix}*\n\n` + menuTemplate;
-    return await reply(banner, { mentions: [sender] });
+    const userGreeting = isGroup ? `@${senderNumber}` : `*${pushName}*`;
+    const banner = `👋 Halo ${userGreeting}!\nSelamat datang di *${config.botName}*.\nPrefix: *${config.prefix}*\n\n` + menuTemplate;
+    return await reply(banner, { mentions: [sender, rawSender, normSender] });
   }
 
   if (command === 'ping') {
-    const start = Date.now();
-    await reply('🏓 Menghitung latency...');
-    const latency = Date.now() - start;
+    const latency = Date.now() - (msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now());
+    const displayLatency = Math.max(1, Math.abs(latency));
     return await sock.sendMessage(chatId, {
-      text: `🏓 *Pong!*\n\n⚡ *Kecepatan Respon:* ${latency} ms\n⏱️ *Uptime:* ${formatUptime(Math.floor((Date.now() - startTime) / 1000))}\n🟢 *Server:* Aktif & Normal`
+      text: `🏓 *Pong!*\n\n⚡ *Kecepatan Respon:* ${displayLatency} ms\n⏱️ *Uptime:* ${formatUptime(Math.floor((Date.now() - startTime) / 1000))}\n🟢 *Server:* Aktif & Normal`
     }, { quoted: msg });
   }
 
@@ -424,12 +640,22 @@ async function handleMessage(sock, msg, startTime) {
     return reply(`🤖 *INFORMASI BOT*\n\n` +
       `• *Nama:* ${config.botName}\n` +
       `• *Versi:* ${config.botVersion}\n` +
+      `• *Total Hit:* ${db.getHits().toLocaleString('id-ID')} kali\n` +
+      `• *Limit Grup:* Bebas Limit (Unlimited ♾️)\n` +
+      `• *Limit Pengguna:* Bebas Limit (Unlimited ♾️)\n` +
       `• *Node.js:* ${process.version}\n` +
       `• *Platform:* ${process.platform} (${process.arch})\n` +
       `• *RAM Digunakan:* ${formatBytes(mem.rss)}\n` +
       `• *Prefix:* ${config.prefix}\n` +
-      `• *Total Hit Perintah:* ${db.data.settings?.totalHits || 1}\n` +
       `• *Owner:* ${config.owner.name}`);
+  }
+
+  if (command === 'limit' || command === 'ceklimit') {
+    return reply(`📊 *STATUS LIMIT SIKANBOT*\n\n` +
+      `• *Limit Grup:* Bebas Limit (Unlimited ♾️)\n` +
+      `• *Limit Pengguna:* Bebas Limit (Unlimited ♾️)\n` +
+      `• *Total Hit Bot:* ${db.getHits().toLocaleString('id-ID')} kali\n\n` +
+      `Seluruh fitur SikanBot (Downloader, Stiker, AI, Tools, Game) bebas digunakan tanpa batas harian.`);
   }
 
   if (command === 'owner') {
@@ -467,20 +693,7 @@ async function handleMessage(sock, msg, startTime) {
 ├ Prefix    : ${config.prefix}
 │
 ╰──────────────
-
-
-╭──〔 👑 OWNER 〕
-│
-│ 👤 Nama   : ${config.owner.name}
-│ 💻 Role   : ${config.owner.role}
-│ 🤖 Bot    : ${config.botName}
-│ 🎓 Kampus : ${config.owner.campus}
-│
-│ 📱 WhatsApp : [${config.owner.phone}]
-│ 📷 Instagram: [${config.owner.instagram}]
-│ 💻 GitHub   : [${config.owner.github}]
-│
-╰──────────────`;
+`;
 
     return reply(fullCard);
   }
@@ -492,9 +705,9 @@ async function handleMessage(sock, msg, startTime) {
   if (command === 'donate') {
     return reply(`☕ *DONASI & DUKUNGAN*\n\n` +
       `Bantu server bot tetap menyala dengan donasi seikhlasnya:\n` +
-      `• DANA: *${config.donate.dana}*\n` +
-      `• GoPay: *${config.donate.gopay}*\n` +
-      `• Saweria: *${config.donate.saweria}*\n\n` +
+      `A.n *${config.donate.name}*\n` +
+      `* DANA: *${config.donate.dana}*\n` +
+      `* GoPay: *${config.donate.gopay}*\n\n\n` +
       `Terima kasih atas dukungan Anda! 🙏`);
   }
 
@@ -533,7 +746,6 @@ async function handleMessage(sock, msg, startTime) {
    * ==================================================================== */
   if (command === 'play') {
     if (!q) return reply(`Masukkan judul lagu atau link YouTube!\nContoh: *${config.prefix}play Denny Caknan Cundamani*`);
-    await reply('🎵 Mencari dan mengunduh lagu...');
 
     const tempAudio = path.join(config.tempDir, `audio_${Date.now()}.mp3`);
     try {
@@ -558,7 +770,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'play2') {
     if (!q) return reply(`Masukkan judul video atau link YouTube!\nContoh: *${config.prefix}play2 anime edit*`);
-    await reply('🎬 Mencari dan mengunduh video...');
 
     const tempVideo = path.join(config.tempDir, `vid_${Date.now()}.mp4`);
     try {
@@ -581,17 +792,83 @@ async function handleMessage(sock, msg, startTime) {
     return;
   }
 
-  if (command === 'tiktok') {
-    if (!q) return reply(`Masukkan link video TikTok!\nContoh: *${config.prefix}tiktok https://vt.tiktok.com/...*`);
-    await reply('⏳ Mengunduh video TikTok tanpa watermark...');
+  if (command === 'tiktok' || command === 'tiktokfoto') {
+    if (!q) {
+      return reply(
+        `Masukkan link TikTok (video atau slide foto)!\n` +
+        `Contoh:\n` +
+        `*${config.prefix}tiktok https://vt.tiktok.com/...*\n` +
+        `*${config.prefix}tt https://www.tiktok.com/@user/photo/...*`
+      );
+    }
+
     try {
       const data = await scraper.getTikTok(q);
-      await sock.sendMessage(chatId, {
-        video: { url: data.videoUrl },
-        caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}`
-      }, { quoted: msg });
+
+      // KASUS 1: POSTINGAN ADALAH SLIDE FOTO / GAMBAR
+      if (data.isSlide || (Array.isArray(data.images) && data.images.length > 0)) {
+        const totalPhotos = data.images.length;
+
+        for (let i = 0; i < totalPhotos; i++) {
+          const imgUrl = data.images[i];
+          const isFirst = i === 0;
+          const caption = isFirst
+            ? `✨ *TikTok Slide Foto (${totalPhotos} Foto)*\n\n` +
+              `👤 *Author:* ${data.author} ${data.authorUsername ? '(@' + data.authorUsername + ')' : ''}\n` +
+              `📝 *Caption:* ${data.title}\n\n` +
+              `📷 Foto [1/${totalPhotos}]`
+            : `📷 Foto [${i + 1}/${totalPhotos}]`;
+
+          try {
+            const imgRes = await axios.get(imgUrl, {
+              responseType: 'arraybuffer',
+              timeout: 15000,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+              }
+            });
+            await sock.sendMessage(chatId, {
+              image: Buffer.from(imgRes.data),
+              caption
+            }, { quoted: isFirst ? msg : undefined });
+          } catch (_) {
+            await sock.sendMessage(chatId, {
+              image: { url: imgUrl },
+              caption
+            }, { quoted: isFirst ? msg : undefined });
+          }
+
+          if (i < totalPhotos - 1) {
+            await new Promise((r) => setTimeout(r, 800));
+          }
+        }
+
+        // Kirim audio latar jika ada
+        if (data.audioUrl) {
+          try {
+            await new Promise((r) => setTimeout(r, 800));
+            await sock.sendMessage(chatId, {
+              audio: { url: data.audioUrl },
+              mimetype: 'audio/mp4',
+              fileName: `${data.title ? data.title.slice(0, 30) : 'tiktok_audio'}.mp3`
+            }, { quoted: msg });
+          } catch (_) {}
+        }
+        return;
+      }
+
+      // KASUS 2: POSTINGAN ADALAH VIDEO
+      if (data.videoUrl) {
+        await sock.sendMessage(chatId, {
+          video: { url: data.videoUrl },
+          caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}`
+        }, { quoted: msg });
+        return;
+      }
+
+      throw new Error('Tidak ditemukan video ataupun foto dari link TikTok ini.');
     } catch (e) {
-      // Fallback ke yt-dlp
+      // Fallback ke yt-dlp jika scraper API gagal (khusus video)
       const reqId = `tt_${Date.now()}`;
       try {
         const result = await downloadVideo(q, reqId);
@@ -602,7 +879,7 @@ async function handleMessage(sock, msg, startTime) {
         }, { quoted: msg });
         deleteFileSafe(result.filePath);
       } catch (err2) {
-        reply(`❌ Gagal mendownload TikTok: ${err2.message}`);
+        reply(`❌ Gagal memproses TikTok: ${e.message || err2.message}`);
       }
     }
     return;
@@ -610,7 +887,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'tiktokstalk') {
     if (!q) return reply(`Masukkan username TikTok!\nContoh: *${config.prefix}tiktokstalk sandikagalih*`);
-    await reply('🔍 Mencari profil TikTok...');
     try {
       const prof = await scraper.stalkTikTok(q);
       const text = `👤 *TIKTOK STALK PROFILE*\n\n` +
@@ -636,9 +912,97 @@ async function handleMessage(sock, msg, startTime) {
     return;
   }
 
-  if (command === 'ig' || command === 'facebook' || command === 'twitter') {
+  if (command === 'ig' || command === 'igstory') {
+    if (!q) {
+      if (command === 'igstory') {
+        return reply(`📸 *Instagram Story Downloader*\n\nMasukkan link Story Instagram atau username akun!\n\n📌 *Contoh Link:*\n*${config.prefix}igstory https://www.instagram.com/stories/...*\n\n📌 *Contoh Username:*\n*${config.prefix}igstory rahmathaikal.05*`);
+      }
+      return reply(`📸 *Instagram Downloader*\n\nMasukkan URL Instagram (Reel, Post, Carousel Foto & Video, atau Story)!\n\n📌 *Contoh:*\n*${config.prefix}ig https://www.instagram.com/reel/...*\n*${config.prefix}ig https://www.instagram.com/p/...*`);
+    }
+
+    const isStoryCmd = command === 'igstory' || /instagram\.com\/stories\//i.test(q);
+
+    try {
+      const data = isStoryCmd
+        ? await scraper.getInstagramStory(q)
+        : await scraper.getInstagram(q);
+
+      if (data && Array.isArray(data.media) && data.media.length > 0) {
+        const totalMedia = data.media.length;
+
+        for (let i = 0; i < totalMedia; i++) {
+          const item = data.media[i];
+          const isFirst = i === 0;
+          const caption = totalMedia > 1
+            ? (isFirst ? `✨ *Instagram Carousel (${totalMedia} Media)*\n\n${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]` : `${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]`)
+            : (isStoryCmd ? `✨ *Instagram Story*` : `✨ *Instagram Downloader*`);
+
+          try {
+            const mediaRes = await axios.get(item.url, {
+              responseType: 'arraybuffer',
+              timeout: 30000,
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.instagram.com/'
+              }
+            });
+            const buffer = Buffer.from(mediaRes.data);
+            const contentType = String(mediaRes.headers['content-type'] || '').toLowerCase();
+            const isVideo = contentType.includes('video') || item.type === 'video' || (buffer.length >= 8 && buffer.slice(4, 8).toString('ascii') === 'ftyp') || /\.mp4/i.test(item.url);
+
+            if (isVideo) {
+              await sock.sendMessage(chatId, {
+                video: buffer,
+                caption,
+                mimetype: 'video/mp4'
+              }, { quoted: isFirst ? msg : undefined });
+            } else {
+              await sock.sendMessage(chatId, {
+                image: buffer,
+                caption
+              }, { quoted: isFirst ? msg : undefined });
+            }
+          } catch (fetchErr) {
+            try {
+              if (item.type === 'video') {
+                await sock.sendMessage(chatId, { video: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
+              } else {
+                await sock.sendMessage(chatId, { image: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
+              }
+            } catch (sendErr) {
+              log('WARN', `Gagal mengirim media Instagram: ${sendErr.message}`);
+            }
+          }
+
+          if (i < totalMedia - 1) {
+            await new Promise((r) => setTimeout(r, 800));
+          }
+        }
+        return;
+      }
+      throw new Error('Tidak ada media yang berhasil ditemukan dari link Instagram ini.');
+    } catch (igErr) {
+      // Fallback ke yt-dlp jika getInstagram gagal pada link reguler
+      if (!isStoryCmd && /^https?:\/\//i.test(q)) {
+        try {
+          const reqId = `ig_${Date.now()}`;
+          const res = await downloadVideo(q, reqId);
+          const videoBuff = fs.readFileSync(res.filePath);
+          await sock.sendMessage(chatId, {
+            video: videoBuff,
+            caption: `🎥 *${res.title}*\n📦 Ukuran: ${formatBytes(res.fileSize)}`
+          }, { quoted: msg });
+          deleteFileSafe(res.filePath);
+          return;
+        } catch (_) {}
+      }
+      return reply(`❌ Gagal mengunduh: ${igErr.message}`);
+    }
+    return;
+  }
+
+  if (command === 'facebook' || command === 'twitter') {
     if (!q) return reply(`Masukkan URL ${command}!\nContoh: *${config.prefix}${command} https://...*`);
-    await reply(`⏳ Mengunduh video dari ${command}...`);
     const reqId = `${command}_${Date.now()}`;
     try {
       const res = await downloadVideo(q, reqId);
@@ -656,7 +1020,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'spotify') {
     if (!q) return reply(`Masukkan judul lagu Spotify!\nContoh: *${config.prefix}spotify Nadin Amizah Rayuan Perempuan Gila*`);
-    await reply('🔍 Mencari dan mengunduh lagu Spotify...');
     const tempAudio = path.join(config.tempDir, `spotify_${Date.now()}.mp3`);
     try {
       const dlRes = await scraper.downloadYouTubeAudio(q, tempAudio);
@@ -680,7 +1043,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'mediafire') {
     if (!q) return reply(`Masukkan link Mediafire!\nContoh: *${config.prefix}mediafire https://www.mediafire.com/file/...*`);
-    await reply('⏳ Mengekstrak tautan Mediafire...');
     try {
       const mf = await scraper.getMediafire(q);
       reply(`📁 *MEDIAFIRE DOWNLOADER*\n\n• *Nama:* ${mf.filename}\n• *Ukuran:* ${mf.size}\n• *Link Unduh Langsung:* ${mf.downloadUrl}`);
@@ -717,7 +1079,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'pinterest') {
     if (!q) return reply(`Masukkan kata kunci atau link Pinterest!\nContoh: *${config.prefix}pinterest anime aesthetic*`);
-    await reply('🔍 Mencari di Pinterest...');
     try {
       const pins = await scraper.searchPinterest(q);
       if (pins.length > 0) {
@@ -737,7 +1098,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'img') {
     if (!q) return reply(`Masukkan kata kunci pencarian gambar!\nContoh: *${config.prefix}img mobil sport*`);
-    await reply('🔍 Mencari gambar...');
     try {
       const list = await scraper.searchImages(q);
       if (list.length > 0) {
@@ -760,7 +1120,6 @@ async function handleMessage(sock, msg, startTime) {
    * ==================================================================== */
   if (command === 'google') {
     if (!q) return reply(`Masukkan query pencarian Google!\nContoh: *${config.prefix}google penemu komputer*`);
-    await reply('🔍 Mencari di Google...');
     try {
       const results = await scraper.searchGoogle(q);
       if (results.length === 0) return reply('Tidak ditemukan hasil untuk pencarian tersebut.');
@@ -776,7 +1135,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'yts') {
     if (!q) return reply(`Masukkan judul video YouTube!\nContoh: *${config.prefix}yts tutorial nodejs*`);
-    await reply('🔍 Mencari video di YouTube...');
     try {
       const list = await scraper.searchYouTube(q, 5);
       if (list.length === 0) return reply('Video tidak ditemukan.');
@@ -957,7 +1315,6 @@ async function handleMessage(sock, msg, startTime) {
       return reply(`Kirim gambar/video dengan caption *${config.prefix}sticker* atau balas gambar/video yang sudah dikirim!`);
     }
 
-    await reply('⏳ Sedang memproses stiker...');
     try {
       const isVideo = Boolean(targetVideo);
       const mediaObj = isVideo ? targetVideo : targetImage;
@@ -976,7 +1333,6 @@ async function handleMessage(sock, msg, startTime) {
     if (!targetSticker) {
       return reply(`Balas stiker dengan perintah *${config.prefix}take <packname> | <author>*\nContoh: *${config.prefix}take SikanBot | Rahmat Haikal*`);
     }
-    await reply('⏳ Mengubah watermark stiker...');
     try {
       const parts = q.split('|').map((s) => s.trim());
       const pack = parts[0] || config.sticker.packname;
@@ -993,7 +1349,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'smaker') {
     if (!q) return reply(`Masukkan teks stiker!\nContoh: *${config.prefix}smaker Halo Dunia*`);
-    await reply('⏳ Membuat stiker teks...');
     try {
       const stk = await createTextSticker(q, config.sticker.packname, config.sticker.author);
       await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
@@ -1005,7 +1360,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'getsticker') {
     if (!q) return reply(`Masukkan kata kunci stiker!\nContoh: *${config.prefix}getsticker spongebob*`);
-    await reply('🔍 Mencari stiker...');
     try {
       const pins = await scraper.searchPinterest(q + ' sticker transparent');
       if (pins.length > 0) {
@@ -1027,7 +1381,6 @@ async function handleMessage(sock, msg, startTime) {
     const emojis = q.match(/\p{Emoji}/gu) || [];
     if (emojis.length < 2) return reply('Harap masukkan minimal 2 emoji!');
 
-    await reply('⏳ Menggabungkan emoji...');
     try {
       const mixUrl = await scraper.getEmojiMix(emojis[0], emojis[1]);
       const res = await scraper.axios.get(mixUrl, { responseType: 'arraybuffer' });
@@ -1044,7 +1397,6 @@ async function handleMessage(sock, msg, startTime) {
     if (!targetSticker) {
       return reply(`Balas stiker atau kirim stiker dengan caption *${config.prefix}toimg* untuk membukanya menjadi gambar!`);
     }
-    await reply('⏳ Membuka stiker menjadi gambar...');
     try {
       const buffer = await getMediaBuffer(targetSticker, 'sticker');
       const imgBuffer = await webpToImage(buffer);
@@ -1060,7 +1412,6 @@ async function handleMessage(sock, msg, startTime) {
     if (!targetSticker) {
       return reply(`Balas stiker animasi (bergerak) dengan *${config.prefix}tovid* untuk mengubahnya menjadi video!`);
     }
-    await reply('⏳ Mengonversi stiker animasi ke video MP4...');
     try {
       const buffer = await getMediaBuffer(targetSticker, 'sticker');
       const vidBuffer = await webpToVideo(buffer);
@@ -1073,7 +1424,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'attp') {
     if (!q) return reply(`Masukkan teks untuk stiker animasi berkelip!\nContoh: *${config.prefix}attp SikanBot*`);
-    await reply('⏳ Membuat stiker animasi teks (ATTP)...');
     try {
       const attpWebp = await createAttpSticker(q, config.sticker.packname, config.sticker.author);
       await sock.sendMessage(chatId, { sticker: attpWebp }, { quoted: msg });
@@ -1085,12 +1435,22 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'brat') {
     if (!q) return reply(`Masukkan teks untuk stiker brat!\nContoh: *${config.prefix}brat sikanbot*`);
-    await reply('⏳ Membuat stiker brat...');
     try {
-      const bratSticker = await createBratSticker(q, config.sticker.packname, config.sticker.author);
+      const bratSticker = await createBratSticker(q, false, config.sticker.packname, config.sticker.author);
       await sock.sendMessage(chatId, { sticker: bratSticker }, { quoted: msg });
     } catch (e) {
       reply(`❌ Gagal membuat stiker brat: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'bratvid') {
+    if (!q) return reply(`Masukkan teks untuk stiker brat animasi/bergerak!\nContoh: *${config.prefix}bratvid lagi mikirin kamu*`);
+    try {
+      const bratSticker = await createBratVideoSticker(q, config.sticker.packname, config.sticker.author);
+      await sock.sendMessage(chatId, { sticker: bratSticker }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker brat animasi: ${e.message}`);
     }
     return;
   }
@@ -1111,7 +1471,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'pdf') {
     if (!q) return reply(`Masukkan teks atau materi yang ingin dijadikan PDF!\nContoh: *${config.prefix}pdf Judul Materi\nIni adalah isi catatan saya...*`);
-    await reply('⏳ Membuat file PDF...');
     try {
       const pdfBuffer = await scraper.createPdfFromText(q, 'Dokumen SikanBot');
       await sock.sendMessage(chatId, {
@@ -1128,7 +1487,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'qrcode') {
     if (!q) return reply(`Masukkan teks atau link URL untuk dijadikan QR Code!\nContoh: *${config.prefix}qrcode https://google.com*`);
-    await reply('⏳ Membuat QR Code...');
     try {
       const qrBuffer = await scraper.createQrCode(q);
       await sock.sendMessage(chatId, {
@@ -1159,7 +1517,6 @@ async function handleMessage(sock, msg, startTime) {
       lang = args[0];
       textToTrans = args.slice(1).join(' ');
     }
-    await reply('⏳ Menerjemahkan...');
     try {
       const res = await scraper.translateText(textToTrans, lang);
       return reply(`🌐 *TRANSLATE (${lang.toUpperCase()})*\n\n${res}`);
@@ -1170,7 +1527,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'ssweb') {
     if (!q) return reply(`Masukkan URL website!\nContoh: *${config.prefix}ssweb https://google.com*`);
-    await reply('📸 Mengambil screenshot website...');
     try {
       const ssUrl = scraper.getWebScreenshotUrl(q);
       await sock.sendMessage(chatId, {
@@ -1189,7 +1545,6 @@ async function handleMessage(sock, msg, startTime) {
       return reply(`Kirim atau balas gambar bertuliskan teks dengan perintah *${config.prefix}ocr*!`);
     }
 
-    await reply('🔍 Membaca dan mengekstrak teks dari gambar...');
     try {
       const imgBuffer = await getMediaBuffer(targetImage, 'image');
       const textResult = await scraper.getOCR(imgBuffer);
@@ -1201,7 +1556,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'weather') {
     if (!q) return reply(`Masukkan nama kota!\nContoh: *${config.prefix}weather Lhokseumawe*`);
-    await reply('🌤️ Mengecek prakiraan cuaca...');
     try {
       const w = await scraper.getWeather(q);
       return reply(`🌤️ *INFO CUACA KOTA*\n\n` +
@@ -1221,6 +1575,8 @@ async function handleMessage(sock, msg, startTime) {
    * ==================================================================== */
   if (['add', 'kick', 'promote', 'demote', 'tagall', 'hidetag', 'groupinfo', 'linkgroup', 'revoke', 'open', 'close', 'warn', 'antilink', 'antispam', 'welcome'].includes(command)) {
     if (!isGroup) return reply('Perintah ini hanya dapat digunakan di dalam grup!');
+
+    await loadGroupInfo();
 
     if (command === 'groupinfo') {
       const info = `👥 *INFORMASI GRUP*\n\n` +
@@ -1243,16 +1599,23 @@ async function handleMessage(sock, msg, startTime) {
       let text = `📢 *TAG ALL MEMBERS*\n${q ? `Pesan: *${q}*\n` : ''}\n`;
       const mentions = [];
       groupMembers.forEach((m, i) => {
-        text += `${i + 1}. @${m.id.split('@')[0]}\n`;
-        mentions.push(m.id);
+        const cleanJid = jidNormalizedUser(m.id);
+        const num = cleanJid.split('@')[0];
+        text += `${i + 1}. @${num}\n`;
+        mentions.push(cleanJid);
+        if (m.id && m.id !== cleanJid) mentions.push(m.id);
       });
-      return await sock.sendMessage(chatId, { text, mentions });
+      return await sock.sendMessage(chatId, { text, mentions: [...new Set(mentions)] });
     }
 
     if (command === 'hidetag') {
       const text = q || '📢 PENGUMUMAN GRUP';
-      const mentions = groupMembers.map((m) => m.id);
-      return await sock.sendMessage(chatId, { text, mentions });
+      const mentions = [];
+      groupMembers.forEach((m) => {
+        mentions.push(jidNormalizedUser(m.id));
+        if (m.id) mentions.push(m.id);
+      });
+      return await sock.sendMessage(chatId, { text, mentions: [...new Set(mentions)] });
     }
 
     if (command === 'open') {
@@ -1412,7 +1775,6 @@ async function handleMessage(sock, msg, startTime) {
 
     if (command === 'broadcast') {
       if (!q) return reply(`Masukkan pesan siaran!\nContoh: *${config.prefix}bc Halo semua pengguna SikanBot!*`);
-      await reply('📢 Memulai siaran pesan ke seluruh grup...');
       try {
         const allGroups = await sock.groupFetchAllParticipating();
         const list = Object.keys(allGroups);
@@ -1467,7 +1829,6 @@ async function handleMessage(sock, msg, startTime) {
    * ==================================================================== */
   if (command === 'ai' || command === 'ask') {
     if (!q) return reply(`Halo! Tanyakan apa saja kepada AI.\nContoh: *${config.prefix}ai Jelaskan cara kerja jaringan internet secara sederhana*`);
-    await reply('🤖 SikanBot AI sedang berpikir...');
     try {
       const answer = await scraper.askAI(q);
       return reply(answer);
@@ -1478,7 +1839,6 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'imagine') {
     if (!q) return reply(`Masukkan prompt deskripsi gambar!\nContoh: *${config.prefix}imagine cybernetic futuristic cat with neon lights, 4k ultra detailed*`);
-    await reply('🎨 Sedang melukis gambar dengan AI...');
     try {
       const imgUrl = scraper.getImagineUrl(q);
       await sock.sendMessage(chatId, {
@@ -1494,13 +1854,15 @@ async function handleMessage(sock, msg, startTime) {
   if (command === 'summarize') {
     const textToSum = q || (quoted ? (quoted.conversation || quoted.extendedTextMessage?.text) : '');
     if (!textToSum) return reply(`Kirim atau balas teks panjang yang ingin dirangkum!\nContoh: *${config.prefix}summarize <artikel>*`);
-    await reply('📝 Merangkum teks...');
     try {
       const summary = await scraper.askAI(textToSum, 'Tolong buat rangkuman inti poin penting yang padat, jelas, dan rapi dalam bahasa Indonesia.');
       return reply(`📑 *RANGKUMAN TEKS*\n\n${summary}`);
     } catch (e) {
       return reply(`❌ Gagal merangkum: ${e.message}`);
     }
+  }
+  } finally {
+    await setPresence('paused');
   }
 }
 

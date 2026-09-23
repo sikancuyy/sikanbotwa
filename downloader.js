@@ -80,6 +80,11 @@ function getVideoMetadata(url) {
       url
     ];
 
+    const cookiesFile = path.join(__dirname, 'cookies.txt');
+    if (fs.existsSync(cookiesFile)) {
+      args.splice(args.length - 1, 0, '--cookies', cookiesFile);
+    }
+
     let stdout = '';
     const proc = spawn(ytdlpBin, args, { windowsHide: true });
 
@@ -137,6 +142,12 @@ function executeDownload(url, id) {
     // Jika ffmpeg terdeteksi atau dikonfigurasi, tambahkan path ffmpeg
     if (ffmpegBin) {
       args.splice(args.length - 1, 0, '--ffmpeg-location', ffmpegBin);
+    }
+
+    // Jika cookies.txt tersedia, gunakan untuk autentikasi (mendukung Instagram Story & konten login)
+    const cookiesFile = path.join(__dirname, 'cookies.txt');
+    if (fs.existsSync(cookiesFile)) {
+      args.splice(args.length - 1, 0, '--cookies', cookiesFile);
     }
 
     log('INFO', `[${id}] Memulai download: ${url}`);
