@@ -140,8 +140,9 @@ function executeDownload(url, id) {
     ];
 
     // Jika ffmpeg terdeteksi atau dikonfigurasi, tambahkan path ffmpeg
-    if (ffmpegBin) {
-      args.splice(args.length - 1, 0, '--ffmpeg-location', ffmpegBin);
+    if (ffmpegBin && fs.existsSync(ffmpegBin)) {
+      const ffmpegDir = fs.statSync(ffmpegBin).isDirectory() ? ffmpegBin : path.dirname(ffmpegBin);
+      args.splice(args.length - 1, 0, '--ffmpeg-location', ffmpegDir);
     }
 
     // Jika cookies.txt tersedia, gunakan untuk autentikasi (mendukung Instagram Story & konten login)

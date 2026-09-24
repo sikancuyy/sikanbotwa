@@ -46,6 +46,7 @@ function cleanDirectory(dirPath, maxAgeMs = 30 * 60 * 1000) {
  * @returns {string} Path executable atau nama command
  */
 function resolveBinary(binaryConfig) {
+  if (!binaryConfig) return '';
   const isWindows = process.platform === 'win32';
   if (isWindows && binaryConfig.localCandidates && Array.isArray(binaryConfig.localCandidates)) {
     for (const candidate of binaryConfig.localCandidates) {
@@ -54,6 +55,24 @@ function resolveBinary(binaryConfig) {
       }
     }
   }
+
+  if (binaryConfig.command && fs.existsSync(binaryConfig.command)) {
+    return binaryConfig.command;
+  }
+
+  // Cari di system PATH pada Windows agar mendapatkan path absolut (misal WinGet packages)
+  if (isWindows && binaryConfig.command) {
+    try {
+      const { execSync } = require('child_process');
+      const cmdName = String(binaryConfig.command).replace(/\.exe$/i, '');
+      const out = execSync(`where.exe ${cmdName}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+      const firstLine = out.trim().split(/\r?\n/)[0];
+      if (firstLine && fs.existsSync(firstLine)) {
+        return firstLine;
+      }
+    } catch (_) {}
+  }
+
   return binaryConfig.command;
 }
 

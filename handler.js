@@ -996,7 +996,7 @@ async function handleMessage(sock, msg, startTime) {
           return;
         } catch (_) {}
       }
-      return reply(`❌ Gagal mengunduh: ${igErr.message}`);
+      return reply(`❌ Gagal mengunduh Instagram: ${igErr.message}\n\n💡 *Tips:* Pastikan akun Instagram bersifat publik dan link postingan valid. Untuk konten yang memerlukan login, letakkan file *cookies.txt* di folder bot.`);
     }
     return;
   }
@@ -1065,11 +1065,23 @@ async function handleMessage(sock, msg, startTime) {
     if (!q) return reply(`Masukkan link GitHub repository!\nContoh: *${config.prefix}gitclone https://github.com/user/repo*`);
     try {
       const repoData = scraper.getGitClone(q);
+      const zipRes = await axios.get(repoData.zipUrl, {
+        responseType: 'arraybuffer',
+        maxRedirects: 5,
+        timeout: 30000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      const zipBuffer = Buffer.from(zipRes.data);
+      if (zipBuffer.length > config.maxFileSizeMB * 1024 * 1024) {
+        return reply(`❌ Ukuran file repository (${formatBytes(zipBuffer.length)}) melebihi batas bot (${config.maxFileSizeMB} MB).`);
+      }
       await sock.sendMessage(chatId, {
-        document: { url: repoData.zipUrl },
+        document: zipBuffer,
         fileName: repoData.filename,
         mimetype: 'application/zip',
-        caption: `📦 *GitHub Repository:* ${repoData.user}/${repoData.repo}`
+        caption: `📦 *GitHub Repository:* ${repoData.user}/${repoData.repo}\n📦 Ukuran: ${formatBytes(zipBuffer.length)}`
       }, { quoted: msg });
     } catch (e) {
       reply(`❌ Gagal mengunduh repo: ${e.message}`);
