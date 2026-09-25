@@ -20,9 +20,9 @@ function isValidUserNumber(phone) {
   if (clean.startsWith('120363')) return false;
 
   // Format standar utama (Indonesia):
-  // 628xxxxxxxxxx (10 - 14 digit)
+  // 628xxxxxxxxxx (10 - 14 digit) atau nomor WhatsApp bisnis Indonesia (622... dsb)
   if (clean.startsWith('62')) {
-    return /^628[1-9][0-9]{6,10}$/.test(clean);
+    return /^62[2-9][0-9]{7,11}$/.test(clean);
   }
 
   // Format nomor internasional resmi (10-13 digit, bukan LID 14-15 digit)
@@ -226,10 +226,88 @@ function getUserJid(msgOrNumber, sock = null, groupMetadata = null) {
   return num ? `${num}@s.whatsapp.net` : null;
 }
 
+/**
+ * Mendapatkan nomor WhatsApp user dari reply chat (quoted message)
+ * @param {object} msg Baileys message object
+ * @param {object} [sock] Baileys socket object
+ * @param {object} [groupMetadata] Baileys group metadata
+ * @returns {string|null} Nomor WhatsApp (digits) dari reply chat atau null jika tidak ada/tidak valid
+ */
+function getQuotedUserNumber(msg, sock = null, groupMetadata = null) {
+  if (!msg) return null;
+
+  // 1. Unwrap Baileys wrappers
+  let rawMessage = msg.message;
+  while (
+    rawMessage?.ephemeralMessage ||
+    rawMessage?.viewOnceMessage ||
+    rawMessage?.viewOnceMessageV2 ||
+    rawMessage?.documentWithCaptionMessage
+  ) {
+    rawMessage = (
+      rawMessage.ephemeralMessage?.message ||
+      rawMessage.viewOnceMessage?.message ||
+      rawMessage.viewOnceMessageV2?.message ||
+      rawMessage.documentWithCaptionMessage?.message
+    );
+  }
+
+  // 2. Ambil contextInfo dari berbagai tipe pesan
+  const contextInfo =
+    rawMessage?.extendedTextMessage?.contextInfo ||
+    rawMessage?.imageMessage?.contextInfo ||
+    rawMessage?.videoMessage?.contextInfo ||
+    rawMessage?.documentMessage?.contextInfo ||
+    rawMessage?.stickerMessage?.contextInfo ||
+    rawMessage?.audioMessage?.contextInfo ||
+    rawMessage?.buttonsResponseMessage?.contextInfo ||
+    rawMessage?.templateButtonReplyMessage?.contextInfo ||
+    rawMessage?.interactiveResponseMessage?.contextInfo ||
+    msg.message?.extendedTextMessage?.contextInfo ||
+    msg.quoted?.contextInfo ||
+    null;
+
+  let participant =
+    contextInfo?.participant ||
+    msg.quoted?.sender ||
+    msg.quoted?.participant ||
+    null;
+
+  if (!participant && msg.quoted?.key) {
+    participant = msg.quoted.key.participant || msg.quoted.key.remoteJid;
+  }
+
+  if (!participant) return null;
+
+  const participantStr = String(participant).trim();
+  // Tolak ID grup (@g.us)
+  if (participantStr.endsWith('@g.us') || participantStr.includes('@g.us')) {
+    return null;
+  }
+
+  // Jika participant berformat LID, coba resolve
+  if (participantStr.endsWith('@lid') || participantStr.includes('@lid')) {
+    const resolved = resolveLidToPhone(participantStr, sock, groupMetadata);
+    if (resolved && isValidUserNumber(resolved)) {
+      return resolved;
+    }
+    return null;
+  }
+
+  const normalized = normalizeUserNumber(participantStr);
+  if (normalized && isValidUserNumber(normalized)) {
+    return normalized;
+  }
+
+  return null;
+}
+
 module.exports = {
   getUserNumber,
+  getQuotedUserNumber,
   getUserJid,
   normalizeUserNumber,
   isValidUserNumber,
   resolveLidToPhone
 };
+

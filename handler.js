@@ -40,6 +40,7 @@ const {
 } = require('./helpers/menus');
 const {
   getUserNumber,
+  getQuotedUserNumber,
   getUserJid,
   normalizeUserNumber,
   isValidUserNumber,
@@ -1004,11 +1005,43 @@ async function handleMessage(sock, msg, startTime) {
   }
 
   if (command === 'daftar' || command === 'register') {
-    if (!userNumber) {
-      return reply('❌ Gagal memproses pendaftaran: Nomor WhatsApp asli Anda tidak dapat dideteksi. Pastikan privasi nomor Anda terlihat di WhatsApp.');
+    // Nomor HP pendaftaran diambil dari pesan masuk ataupun dari reply chat
+    const quotedPhone = getQuotedUserNumber(msg, sock, groupMetadata);
+    const incomingPhone = userNumber;
+
+    let targetPhone = null;
+    let isFromReply = false;
+
+    // Jika pesan merupakan balasan (reply chat)
+    if (quotedPhone) {
+      if (botNumber && quotedPhone === botNumber) {
+        // User me-reply chat bot (misal petunjuk pendaftaran), daftarkan nomor pengirim pesan masuk
+        targetPhone = incomingPhone;
+      } else {
+        // User/admin me-reply chat user lain atau pesan dirinya sendiri
+        targetPhone = quotedPhone;
+        isFromReply = true;
+      }
+    } else {
+      // Tidak ada reply chat, ambil dari pesan masuk (sender)
+      targetPhone = incomingPhone;
     }
-    const existingUser = userDb.getUser(sender);
+
+    // Fallback jika salah satu null
+    if (!targetPhone) {
+      targetPhone = incomingPhone || quotedPhone;
+    }
+
+    if (!targetPhone || !isValidUserNumber(targetPhone)) {
+      return reply('❌ Gagal memproses pendaftaran: Nomor WhatsApp asli Anda tidak dapat dideteksi dari pesan masuk maupun reply chat. Pastikan privasi nomor Anda terlihat di WhatsApp atau balas pesan chat user yang valid.');
+    }
+
+    const targetJid = `${targetPhone}@s.whatsapp.net`;
+    const existingUser = userDb.getUser(targetJid);
     if (existingUser && existingUser.registered === 1) {
+      if (isFromReply && targetPhone !== incomingPhone) {
+        return reply(`ℹ️ User dengan nomor +${targetPhone} sudah terdaftar sebagai User #${existingUser.id} (${existingUser.name}).`);
+      }
       return reply(`ℹ️ Kamu sudah terdaftar sebagai User #${existingUser.id}.`);
     }
 
@@ -1018,7 +1051,8 @@ async function handleMessage(sock, msg, startTime) {
         `Gunakan:\n` +
         `${config.prefix}daftar Nama User - Kota - Umur\n\n` +
         `Contoh:\n` +
-        `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20`
+        `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20\n\n` +
+        `_Tips: Anda juga bisa me-reply chat user lain untuk mendaftarkannya._`
       );
     }
 
@@ -1047,7 +1081,7 @@ async function handleMessage(sock, msg, startTime) {
       );
     }
 
-    const newUser = userDb.registerUserWithDetails(sender, {
+    const newUser = userDb.registerUserWithDetails(targetJid, {
       name: regName,
       kota: regKota,
       umur: regUmur
@@ -1058,8 +1092,10 @@ async function handleMessage(sock, msg, startTime) {
       `✅ *PENDAFTARAN BERHASIL*\n\n` +
       `🆔 ID    : ${newUser.id}\n` +
       `👤 Nama  : ${newUser.name}\n` +
+      `📱 Nomor : +${newUser.phone}\n` +
       `📍 Kota  : ${newUser.kota}\n` +
-      `🎂 Umur  : ${newUser.umur}`
+      `🎂 Umur  : ${newUser.umur}` +
+      (isFromReply && targetPhone !== incomingPhone ? `\n\n📢 _Nomor otomatis diambil dari reply chat._` : '')
     );
   }
 
@@ -2678,15 +2714,29 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     if (command === 'daftaruser') {
-      if (!q || !q.includes('|')) {
-        return reply(`Format pendaftaran user oleh admin:\n*${config.prefix}daftaruser <nomor>|<nama lengkap>*\nContoh: *${config.prefix}daftaruser 628123456789|Ahmad Fauzi*`);
+      let targetNum = null;
+      let targetName = null;
+
+      // Cek apakah admin me-reply chat user
+      const quotedNum = getQuotedUserNumber(msg, sock, groupMetadata);
+      if (quotedNum && (!botNumber || quotedNum !== botNumber)) {
+        targetNum = quotedNum;
+        targetName = q.trim();
       }
-      const parts = q.split('|').map((s) => s.trim());
-      const targetNum = normalizeUserNumber(parts[0]);
-      const targetName = parts[1] || '';
+
+      if (!targetNum && q && q.includes('|')) {
+        const parts = q.split('|').map((s) => s.trim());
+        targetNum = normalizeUserNumber(parts[0]);
+        targetName = parts[1] || '';
+      }
 
       if (!targetNum || !isValidUserNumber(targetNum) || !targetName) {
-        return reply('Nomor WhatsApp tidak valid atau nama lengkap kosong!');
+        return reply(
+          `Format pendaftaran user oleh admin:\n` +
+          `• Balas pesan user lalu ketik: *${config.prefix}daftaruser <nama lengkap>*\n` +
+          `• Atau ketik: *${config.prefix}daftaruser <nomor>|<nama lengkap>*\n` +
+          `Contoh: *${config.prefix}daftaruser 628123456789|Ahmad Fauzi*`
+        );
       }
 
       userDb.adminRegisterUser(targetNum, targetName);

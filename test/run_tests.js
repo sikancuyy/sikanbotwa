@@ -1122,6 +1122,146 @@ async function runAllTests() {
     assert.strictEqual(Boolean(check2), false, 'User 2 harus terhapus dari database');
   });
 
+  // 53. getQuotedUserNumber mengambil nomor dari reply chat
+  it('53. getQuotedUserNumber berhasil mengekstrak nomor WhatsApp dari reply chat (contextInfo.participant)', () => {
+    const { getQuotedUserNumber } = require('../helpers/userHelper');
+
+    const msgReply = {
+      key: { remoteJid: '1203630283928192@g.us', participant: '6281111111111@s.whatsapp.net', fromMe: false },
+      message: {
+        extendedTextMessage: {
+          text: '.daftar Budi - Jakarta - 22',
+          contextInfo: {
+            participant: '6281234567890:1@s.whatsapp.net',
+            quotedMessage: { conversation: 'Halo semuanya' }
+          }
+        }
+      }
+    };
+
+    const quotedPhone = getQuotedUserNumber(msgReply);
+    assert.strictEqual(quotedPhone, '6281234567890');
+
+    // Pesan biasa tanpa reply chat -> harus null
+    const msgNormal = {
+      key: { remoteJid: '6281111111111@s.whatsapp.net', fromMe: false },
+      message: { conversation: 'Halo' }
+    };
+    assert.strictEqual(getQuotedUserNumber(msgNormal), null);
+  });
+
+  // 54. Pendaftaran .daftar bisa mengambil nomor dari pesan masuk ataupun reply chat
+  await itAsync('54. Pendaftaran .daftar mengambil nomor dari pesan masuk atau reply chat', async () => {
+    const sentMessages = [];
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_REG_' + Date.now() } };
+      }
+    };
+
+    // A. Pendaftaran dari pesan masuk biasa (tanpa reply)
+    const msgIncoming = {
+      key: {
+        remoteJid: '6289912345678@s.whatsapp.net',
+        fromMe: false
+      },
+      message: {
+        conversation: '.daftar Rahmat Haikal - Lhokseumawe - 20'
+      }
+    };
+
+    await handleMessage(mockSock, msgIncoming);
+    const userIncoming = users.getUser('6289912345678@s.whatsapp.net');
+    assert.strictEqual(Boolean(userIncoming), true, 'User dari pesan masuk harus terdaftar');
+    assert.strictEqual(userIncoming.name, 'Rahmat Haikal');
+    assert.strictEqual(userIncoming.phone, '6289912345678');
+
+    // B. Pendaftaran via reply chat ke pesan user lain
+    const msgReplyUser = {
+      key: {
+        remoteJid: '1203630283928192@g.us',
+        participant: '6289912345678@s.whatsapp.net',
+        fromMe: false
+      },
+      message: {
+        extendedTextMessage: {
+          text: '.daftar Siti Aisyah - Banda Aceh - 21',
+          contextInfo: {
+            participant: '6285277889900@s.whatsapp.net',
+            quotedMessage: { conversation: 'Saya mau daftar bot' }
+          }
+        }
+      }
+    };
+
+    await handleMessage(mockSock, msgReplyUser);
+    const userReplied = users.getUser('6285277889900@s.whatsapp.net');
+    assert.strictEqual(Boolean(userReplied), true, 'User dari reply chat harus terdaftar');
+    assert.strictEqual(userReplied.name, 'Siti Aisyah');
+    assert.strictEqual(userReplied.phone, '6285277889900');
+
+    // C. Pendaftaran ketika user me-reply chat bot -> harus mengambil nomor si pengirim, bukan bot
+    const msgReplyBot = {
+      key: {
+        remoteJid: '1203630283928192@g.us',
+        participant: '6285311223344@s.whatsapp.net',
+        fromMe: false
+      },
+      message: {
+        extendedTextMessage: {
+          text: '.daftar Doni Pratama - Medan - 23',
+          contextInfo: {
+            participant: '6282277256004@s.whatsapp.net', // bot sendiri
+            quotedMessage: { conversation: 'Ketik .daftar untuk memulai' }
+          }
+        }
+      }
+    };
+
+    await handleMessage(mockSock, msgReplyBot);
+    const userFromBotReply = users.getUser('6285311223344@s.whatsapp.net');
+    assert.strictEqual(Boolean(userFromBotReply), true, 'User harus terdaftar dengan nomor pengirim saat reply bot');
+    assert.strictEqual(userFromBotReply.name, 'Doni Pratama');
+    assert.strictEqual(userFromBotReply.phone, '6285311223344');
+  });
+
+  // 55. Admin .daftaruser dapat mendaftarkan user dengan me-reply chat user
+  await itAsync('55. Admin .daftaruser dapat mendaftarkan user dengan me-reply chat user', async () => {
+    const sentMessages = [];
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_ADMIN_REG_' + Date.now() } };
+      }
+    };
+
+    const ownerMsgReply = {
+      key: {
+        remoteJid: '1203630283928192@g.us',
+        participant: '6282267034994@s.whatsapp.net', // Owner
+        fromMe: false
+      },
+      message: {
+        extendedTextMessage: {
+          text: '.daftaruser Teuku Umar',
+          contextInfo: {
+            participant: '6287711223344@s.whatsapp.net',
+            quotedMessage: { conversation: 'Tolong daftarkan saya min' }
+          }
+        }
+      }
+    };
+
+    await handleMessage(mockSock, ownerMsgReply);
+    const userRegByAdmin = users.getUser('6287711223344@s.whatsapp.net');
+    assert.strictEqual(Boolean(userRegByAdmin), true, 'User harus terdaftar via .daftaruser reply');
+    assert.strictEqual(userRegByAdmin.name, 'Teuku Umar');
+    assert.strictEqual(userRegByAdmin.phone, '6287711223344');
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');
