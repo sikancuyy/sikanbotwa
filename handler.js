@@ -12,7 +12,7 @@ const { formatBytes, formatUptime, log, deleteFileSafe } = require('./utils');
 const { downloadVideo } = require('./downloader');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
 const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage } = require('./helpers/group');
-const { generateTTS, cleanTempAudio } = require('./helpers/tts');
+const { generateTTS, convertToVoiceNote, cleanTempAudio } = require('./helpers/tts');
 const { generateQuoteChat, generateBratCustom, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const {
   startProcessing,
@@ -22,19 +22,40 @@ const {
   setReaction,
   setProcessingReaction
 } = require('./helpers/processingStatus');
+const {
+  getMainCategoryMenu,
+  getGeneralMenu,
+  getDownloadMenu,
+  getSearchMenu,
+  getGameMenu,
+  getStickerMenu,
+  getTtsMenu,
+  getUserMenu,
+  getToolsMenu,
+  getGroupMenu,
+  getAdminMenu,
+  getAiMenu,
+  getInfoMenu,
+  getLogMenu
+} = require('./helpers/menus');
 
 // Daftar seluruh command valid bot
 const VALID_COMMANDS = new Set([
+  // Bot Menu Utama & Submenu Kategori
+  'menu', 'help', 'start', 'inmenu', 'indownload', 'insearch', 'ingame',
+  'insticker', 'intts', 'inuser', 'intools', 'ingroup', 'inadmin', 'inai', 'ininfo', 'inlog',
+
   // Bot Menu & Info
-  'menu', 'help', 'start', 'ping', 'alive', 'uptime', 'runtime', 'bot', 'infobot',
-  'owner', 'script', 'donate', 'groups', 'blocklist',
+  'ping', 'alive', 'uptime', 'runtime', 'bot', 'infobot',
+  'owner', 'script', 'donate', 'groups', 'blocklist', 'stats',
 
   // User & Limit & Database
   'limit', 'ceklimit', 'me', 'daftar', 'register',
 
-  // Admin DB & User Management
+  // Admin DB & User Management & Logs
   'users', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit',
   'addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser',
+  'logs', 'loguser', 'logcmd', 'logerror', 'logdownload', 'loggroup',
 
   // Download
   'play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
@@ -125,6 +146,8 @@ async function handleMessage(sock, msg, startTime) {
   const chatId = msg.key.remoteJid;
   msg.chat = chatId;
   let commandHasFailed = false;
+  let lastCommandError = null;
+  const cmdStartTime = Date.now();
   const isGroup = chatId.endsWith('@g.us');
   const botNumber = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
   const rawSender = msg.key.fromMe
@@ -183,6 +206,7 @@ async function handleMessage(sock, msg, startTime) {
   const reply = async (text, options = {}) => {
     if (typeof text === 'string' && (text.trim().startsWith('❌') || text.trim().startsWith('🚫'))) {
       commandHasFailed = true;
+      lastCommandError = text.replace(/^[❌🚫]\s*/, '').trim();
     }
     const opts = { ...options };
     if (!options.skipAutoMention) {
@@ -689,212 +713,104 @@ async function handleMessage(sock, msg, startTime) {
       }
     }
   /* ====================================================================
-   * 1. 🤖 BOT MENU
+   * 1. 🤖 BOT MENU & TIERED SUBMENUS
    * ==================================================================== */
   if (command === 'menu' || command === 'help' || command === 'start') {
-    const menuTemplate = `
-╭───〔 🤖 BOT MENU 〕
-│
-├ .menu (.start)
-├ .help
-├ .ping
-├ .alive
-├ .uptime
-├ .runtime
-├ .bot
-├ .owner
-├ .script
-├ .infobot
-├ .donate
-├ .groups
-├ .blocklist
-╰──────────────
+    commandExecutedSuccessfully = true;
+    const greeting = isGroup ? `@${senderNumber}` : (pushName || 'Kak');
+    const banner = getMainCategoryMenu(greeting);
+    return await reply(banner, { mentions: [sender] });
+  }
 
-╭───〔 📥 DOWNLOAD 〕
-│
-├ .play
-├ .play2
-├ .yts
-├ .tt / .tiktok (video & slide foto)
-├ .ttfoto / .tiktokfoto
-├ .tiktokstalk
-├ .ig / .reel (video, foto, carousel)
-├ .igstory / .story (unduh story IG)
-├ .facebook
-├ .twitter
-├ .spotify
-├ .mediafire
-├ .gdrive
-├ .gitclone
-├ .pinterest
-├ .img
-╰──────────────
+  if (command === 'inmenu') {
+    commandExecutedSuccessfully = true;
+    return await reply(getGeneralMenu());
+  }
 
-╭───〔 🔎 SEARCH 〕
-│
-├ .google
-├ .yts
-├ .img
-├ .pinterest
-╰──────────────
+  if (command === 'indownload') {
+    commandExecutedSuccessfully = true;
+    return await reply(getDownloadMenu());
+  }
 
-╭───〔 🎮 GAME & FUN 〕
-│
-├ .tictactoe
-├ .delttt
-├ .math
-├ .ppt
-├ .slot
-├ .casino
-├ .yourmom
-├ .teri
-├ .tebakgambar
-├ .tebakkata
-├ .suit
-├ .coinflip
-├ .dadu
-╰──────────────
+  if (command === 'insearch') {
+    commandExecutedSuccessfully = true;
+    return await reply(getSearchMenu());
+  }
 
-╭───〔 🧩 STICKER & MEDIA 〕
-│
-├ .sticker [pack|author]
-├ .take / .wm [pack|author]
-├ .smaker <teks>
-├ .getsticker <keyword>
-├ .stickersearch <query>
-├ .emix / .emojimix
-├ .toimg
-├ .tovideo
-├ .attp <teks>
-├ .ttp <teks>
-├ .brat <teks>
-├ .brat2 <teks>
-├ .brat3 <teks>
-├ .bratcolor <teks>|<bg>|<txt>
-├ .brathd <teks>
-├ .bratvid <teks>
-├ .bratvid2 <teks>
-├ .anyabrat <teks>
-├ .animebrat <teks>
-├ .animebrat2 <teks>
-├ .qc [warna]|[teks]
-├ .qc2 [warna]|[teks]
-├ .smeme <atas>|<bawah>
-├ .emojigif <emoji>
-├ .gifsticker <query>,<jml>
-├ .stly / .stickerlysearch
-├ .telestick <url>
-├ .tenor <query>
-├ .ryo
-╰──────────────
+  if (command === 'ingame') {
+    commandExecutedSuccessfully = true;
+    return await reply(getGameMenu());
+  }
 
-╭───〔 🗣️ VOICE & TTS 〕
-│
-├ .tts <teks>
-├ .tts <lang> <teks>
-├ .tiktoktts <teks>
-├ .say <teks>
-╰──────────────
+  if (command === 'insticker') {
+    commandExecutedSuccessfully = true;
+    return await reply(getStickerMenu());
+  }
 
-╭───〔 👤 USER & LIMIT 〕
-│
-├ .daftar [nama]
-├ .register [nama]
-├ .limit / .me
-╰──────────────
+  if (command === 'intts') {
+    commandExecutedSuccessfully = true;
+    return await reply(getTtsMenu());
+  }
 
-╭───〔 🛠️ TOOLS 〕
-│
-├ .calc
-├ .pdf
-├ .qrcode
-├ .shorturl
-├ .translate
-├ .ssweb
-├ .ocr
-├ .weather
-╰──────────────
+  if (command === 'inuser') {
+    commandExecutedSuccessfully = true;
+    return await reply(getUserMenu());
+  }
 
-╭───〔 👥 GROUP 〕
-│
-├ .add
-├ .kick
-├ .promote
-├ .demote
-├ .tagall
-├ .hidetag
-├ .groupinfo
-├ .linkgroup
-├ .revoke
-├ .open
-├ .close
-├ .warn
-├ .antilink
-├ .antispam
-├ .welcome
-╰──────────────
+  if (command === 'intools') {
+    commandExecutedSuccessfully = true;
+    return await reply(getToolsMenu());
+  }
 
-╭───〔 👑 OWNER & ADMIN 〕
-│
-├ .addadmin <nomor>
-├ .deladmin <nomor>
-├ .listadmin
-├ .daftaruser <nomor>|<nama>
-├ .deluser <nomor>
-├ .users
-├ .userinfo <nomor>
-├ .resetlimit <nomor>
-├ .setunlimited <nomor>
-├ .setlimit <nomor>
-├ .addprem
-├ .delprem
-├ .listprem
-├ .ban
-├ .unban
-├ .block
-├ .unblock
-├ .broadcast
-├ .join
-├ .leave
-├ .restart
-├ .shutdown
-╰──────────────
+  if (command === 'ingroup') {
+    commandExecutedSuccessfully = true;
+    return await reply(getGroupMenu());
+  }
 
-╭───〔 🤖 AI 〕
-│
-├ .ai
-├ .ask
-├ .imagine
-├ .translate
-├ .summarize
-╰──────────────
-`.trim();
+  if (command === 'inadmin') {
+    commandExecutedSuccessfully = true;
+    return await reply(getAdminMenu());
+  }
 
-    const userGreeting = isGroup ? `@${senderNumber}` : `*${pushName}*`;
-    const banner = `👋 Halo ${userGreeting}!\nSelamat datang di *${config.botName}*.\nPrefix: *${config.prefix}*\n\n` + menuTemplate;
-    return await reply(banner, { mentions: [sender, rawSender, normSender] });
+  if (command === 'inai') {
+    commandExecutedSuccessfully = true;
+    return await reply(getAiMenu());
+  }
+
+  if (command === 'ininfo') {
+    commandExecutedSuccessfully = true;
+    return await reply(getInfoMenu());
+  }
+
+  if (command === 'inlog') {
+    commandExecutedSuccessfully = true;
+    return await reply(getLogMenu());
   }
 
   if (command === 'ping') {
     const latency = Date.now() - (msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now());
     const displayLatency = Math.max(1, Math.abs(latency));
+    commandExecutedSuccessfully = true;
     return await sock.sendMessage(chatId, {
       text: `🏓 *Pong!*\n\n⚡ *Kecepatan Respon:* ${displayLatency} ms\n⏱️ *Uptime:* ${formatUptime(Math.floor((Date.now() - startTime) / 1000))}\n🟢 *Server:* Aktif & Normal`
     }, { quoted: msg });
   }
 
   if (command === 'alive') {
+    commandExecutedSuccessfully = true;
     return reply(`🟢 *${config.botName}* Berjalan Aktif!\nSemua sistem downloader, game, tools, modul stiker, dan AI siap digunakan 24/7.`);
   }
 
   if (command === 'uptime' || command === 'runtime') {
     const uptimeSec = Math.floor((Date.now() - startTime) / 1000);
+    commandExecutedSuccessfully = true;
     return reply(`⏱️ *Uptime Bot:* ${formatUptime(uptimeSec)}\n🗓️ *Waktu Mulai:* ${new Date(startTime).toLocaleString('id-ID')}`);
   }
 
   if (command === 'bot' || command === 'infobot') {
     const mem = process.memoryUsage();
     const stats = userDb.getUsersStats();
+    commandExecutedSuccessfully = true;
     return reply(`🤖 *INFORMASI BOT*\n\n` +
       `• *Nama:* ${config.botName}\n` +
       `• *Versi:* ${config.botVersion}\n` +
@@ -907,7 +823,46 @@ async function handleMessage(sock, msg, startTime) {
       `• *Owner:* ${config.owner.name}`);
   }
 
-  if (command === 'limit' || command === 'ceklimit' || command === 'me') {
+  if (command === 'me') {
+    const u = userDb.getUser(sender, pushName);
+    const limitCheck = checkUserLimit(sender, isOwner, isGroup);
+    const totalCmds = u?.total_commands || 0;
+    const succCmds = u?.success_commands || 0;
+    const failCmds = u?.failed_commands || 0;
+    const firstSeen = u?.created_at ? new Date(u.created_at).toLocaleDateString('id-ID') : '-';
+    const lastSeen = u?.updated_at ? new Date(u.updated_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-';
+
+    let role = 'User';
+    if (isOwner) role = 'Owner';
+    else if (userDb.isBotAdmin(sender)) role = 'Admin Bot';
+    else if (u?.premium === 1) role = 'Premium';
+
+    const isReg = (u?.registered === 1 || isOwner) ? 'Registered' : 'Not Registered';
+    const isPrem = (u?.premium === 1 || isOwner) ? 'Yes' : 'No';
+    const isUnlim = (limitCheck.isUnlimited) ? 'Yes' : 'No';
+    const limitDisplay = limitCheck.isUnlimited ? 'Unlimited' : limitCheck.remaining;
+
+    const meText = `╭───〔 👤 MY PROFILE 〕
+│
+├ Nama       : ${u?.name || pushName || 'User'}
+├ Nomor      : +${senderNumber}
+├ Status     : ${isReg}
+├ Role       : ${role}
+├ Premium    : ${isPrem}
+├ Unlimited  : ${isUnlim}
+├ Limit      : ${limitDisplay}
+├ Commands   : ${totalCmds.toLocaleString('id-ID')}
+├ Success    : ${succCmds.toLocaleString('id-ID')}
+├ Failed     : ${failCmds.toLocaleString('id-ID')}
+├ First Seen : ${firstSeen}
+├ Last Seen  : ${lastSeen}
+╰────────────────`;
+
+    commandExecutedSuccessfully = true;
+    return reply(meText);
+  }
+
+  if (command === 'limit' || command === 'ceklimit') {
     commandExecutedSuccessfully = true;
     return reply(formatUserStatus(sender, isOwner, isGroup));
   }
@@ -1029,7 +984,7 @@ async function handleMessage(sock, msg, startTime) {
         const audioBuffer = fs.readFileSync(tempAudio);
         await sock.sendMessage(chatId, {
           audio: audioBuffer,
-          mimetype: 'audio/mp4',
+          mimetype: 'audio/mpeg',
           ptt: false
         }, { quoted: msg });
         deleteFileSafe(tempAudio);
@@ -1302,7 +1257,7 @@ async function handleMessage(sock, msg, startTime) {
         const audioBuffer = fs.readFileSync(tempAudio);
         await sock.sendMessage(chatId, {
           audio: audioBuffer,
-          mimetype: 'audio/mp4',
+          mimetype: 'audio/mpeg',
           ptt: false
         }, { quoted: msg });
         deleteFileSafe(tempAudio);
@@ -2080,14 +2035,17 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     let tempAudioPath = null;
+    let voiceNotePath = null;
     try {
       tempAudioPath = await generateTTS(textToSpeak, lang);
-      const audioBuffer = fs.readFileSync(tempAudioPath);
+      const vnInfo = await convertToVoiceNote(tempAudioPath);
+      voiceNotePath = vnInfo.filePath;
+      const audioBuffer = fs.readFileSync(voiceNotePath);
 
       await sock.sendMessage(chatId, {
         audio: audioBuffer,
-        mimetype: 'audio/mp4',
-        ptt: true
+        mimetype: vnInfo.mimetype,
+        ptt: vnInfo.ptt
       }, { quoted: msg });
 
       commandExecutedSuccessfully = true;
@@ -2097,6 +2055,9 @@ async function handleMessage(sock, msg, startTime) {
     } finally {
       if (tempAudioPath) {
         cleanTempAudio(tempAudioPath);
+      }
+      if (voiceNotePath && voiceNotePath !== tempAudioPath) {
+        cleanTempAudio(voiceNotePath);
       }
     }
     return;
@@ -2575,15 +2536,39 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     if (command === 'users') {
-      const stats = userDb.getUsersStats();
+      const pageArg = args[0] ? parseInt(args[0]) : null;
+      const isList = args[0] === 'list' || (!isNaN(pageArg) && pageArg !== null);
+
+      if (isList) {
+        const page = (args[0] === 'list' && args[1]) ? (parseInt(args[1]) || 1) : (pageArg || 1);
+        const data = userDb.getUsersPage(page, 10);
+        if (!data.users || data.users.length === 0) {
+          return reply(`Halaman ${page} tidak ditemukan (total ${data.totalPages} halaman).`);
+        }
+        let txt = `╭───〔 👥 DAFTAR USER (Hal ${data.page}/${data.totalPages}) 〕\n│\n`;
+        data.users.forEach((u, i) => {
+          const num = ((data.page - 1) * data.pageSize) + (i + 1);
+          txt += `├ ${num}. ${u.name || 'User'} (+${u.phone}) [${u.limit_type.toUpperCase()}]\n`;
+        });
+        txt += `╰────────────────\nKetik *${config.prefix}users ${data.page + 1}* untuk halaman berikutnya.`;
+        commandExecutedSuccessfully = true;
+        return reply(txt);
+      }
+
+      const ov = userDb.getUsersOverview();
+      const summaryText = `╭───〔 👥 USER DATABASE 〕
+│
+├ Total User   : ${ov.total.toLocaleString('id-ID')}
+├ Registered   : ${ov.registered.toLocaleString('id-ID')}
+├ Premium      : ${ov.premium.toLocaleString('id-ID')}
+├ Unlimited    : ${ov.unlimited.toLocaleString('id-ID')}
+├ Banned       : ${ov.banned.toLocaleString('id-ID')}
+├ Active Today : ${ov.activeToday.toLocaleString('id-ID')}
+╰────────────────
+Gunakan *${config.prefix}users list* untuk melihat daftar pengguna.`;
+
       commandExecutedSuccessfully = true;
-      return reply(
-        `📊 *TOTAL USER*\n\n` +
-        `• Registered : ${stats.registered}\n` +
-        `• Limited    : ${stats.limited}\n` +
-        `• Unlimited  : ${stats.unlimited}\n` +
-        `• Total User : ${stats.total}`
-      );
+      return reply(summaryText);
     }
 
     if (command === 'userinfo') {
@@ -2591,19 +2576,36 @@ async function handleMessage(sock, msg, startTime) {
       if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}userinfo 62822xxx*`);
       const info = userDb.getUserInfo(target);
       if (!info) return reply('❌ Pengguna tidak ditemukan di database.');
+
+      const limitCheck = checkUserLimit(info.jid, isOwner, false);
+      const isReg = info.registered === 1 ? 'Yes' : 'No';
+      const isPrem = info.premium === 1 ? 'Yes' : 'No';
+      const isUnlim = (info.limit_type === 'unlimited' || info.unlimited === 1) ? 'Yes' : 'No';
+      const limitVal = isUnlim === 'Yes' ? 'Unlimited' : limitCheck.remaining;
+      const firstSeen = info.created_at ? new Date(info.created_at).toLocaleDateString('id-ID') : '-';
+      const lastSeen = info.updated_at ? new Date(info.updated_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-';
+      const lastCmd = info.last_command ? `.${info.last_command}` : '-';
+
+      const infoText = `╭───〔 👤 USER INFORMATION 〕
+│
+├ Name       : ${info.name || '-'}
+├ Number     : ${info.phone || target}
+├ ID         : ${info.id || '-'}
+├ Registered : ${isReg}
+├ Role       : ${info.is_admin ? 'Admin Bot' : (info.role || 'User')}
+├ Premium    : ${isPrem}
+├ Unlimited  : ${isUnlim}
+├ Limit      : ${limitVal}
+├ Commands   : ${(info.total_commands || 0).toLocaleString('id-ID')}
+├ Success    : ${(info.success_commands || 0).toLocaleString('id-ID')}
+├ Failed     : ${(info.failed_commands || 0).toLocaleString('id-ID')}
+├ First Seen : ${firstSeen}
+├ Last Seen  : ${lastSeen}
+├ Last Cmd   : ${lastCmd}
+╰────────────────`;
+
       commandExecutedSuccessfully = true;
-      return reply(
-        `👤 *USER INFO*\n\n` +
-        `• Nama        : ${info.name || '-'}\n` +
-        `• Nomor WA    : +${info.phone || target}\n` +
-        `• JID         : ${info.jid}\n` +
-        `• Terdaftar   : ${info.registered ? 'Ya (Registered)' : 'Belum'}\n` +
-        `• Role Admin  : ${info.is_admin ? '👑 Admin Bot' : 'User'}\n` +
-        `• Status Limit: ${info.limit_type.toUpperCase()}\n` +
-        `• Penggunaan  : ${info.usage_count} kali\n` +
-        `• Dibuat      : ${new Date(info.created_at).toLocaleString('id-ID')}\n` +
-        `• Diperbarui  : ${new Date(info.updated_at).toLocaleString('id-ID')}`
-      );
+      return reply(infoText);
     }
 
     if (command === 'resetlimit') {
@@ -2672,8 +2674,130 @@ async function handleMessage(sock, msg, startTime) {
       return reply(`❌ Gagal merangkum: ${e.message}`);
     }
   }
+
+  /* ====================================================================
+   * 10. 📊 LOG & MONITORING & STATS
+   * ==================================================================== */
+  if (command === 'stats') {
+    let groupCount = 0;
+    try {
+      if (sock.groupFetchAllParticipating) {
+        const groups = await sock.groupFetchAllParticipating();
+        groupCount = Object.keys(groups || {}).length;
+      }
+    } catch (_) {}
+
+    const uptimeStr = formatUptime(Math.floor((Date.now() - startTime) / 1000));
+    const st = userDb.getBotStats(uptimeStr, groupCount);
+
+    const statsText = `╭───〔 📊 BOT STATISTICS 〕
+│
+├ Uptime       : ${st.uptime}
+├ Users        : ${st.users.toLocaleString('id-ID')}
+├ Groups       : ${st.groups.toLocaleString('id-ID')}
+├ Commands     : ${st.commands.toLocaleString('id-ID')}
+├ Success      : ${st.success.toLocaleString('id-ID')}
+├ Failed       : ${st.failed.toLocaleString('id-ID')}
+├ Downloads    : ${st.downloads.toLocaleString('id-ID')}
+├ Stickers     : ${st.stickers.toLocaleString('id-ID')}
+├ TTS          : ${st.tts.toLocaleString('id-ID')}
+╰────────────────`;
+
+    commandExecutedSuccessfully = true;
+    return reply(statsText);
+  }
+
+  if (['logs', 'loguser', 'logcmd', 'logerror', 'logdownload', 'loggroup'].includes(command)) {
+    if (!isOwner && !isBotAdmin) {
+      return reply('🚫 Perintah log dan monitoring hanya dapat diakses oleh Admin Bot atau Owner!');
+    }
+
+    if (command === 'logs') {
+      const limit = parseInt(args[0]) || 10;
+      const logs = userDb.getRecentLogs(Math.min(limit, 25));
+      if (!logs || logs.length === 0) return reply('📋 Belum ada catatan log command.');
+
+      let txt = `📊 *LOG COMMAND TERAKHIR (${logs.length})*\n\n`;
+      logs.forEach((l, i) => {
+        const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        txt += `${i + 1}. [${time}] *${l.command}* by +${l.number} [${l.status}]${l.error ? `\n   ⚠️ Error: ${l.error}` : ''}\n`;
+      });
+      commandExecutedSuccessfully = true;
+      return reply(txt.trim());
+    }
+
+    if (command === 'loguser') {
+      const target = (args[0] || '').replace(/[^0-9]/g, '');
+      if (!target) return reply(`Masukkan nomor user!\nContoh: *${config.prefix}loguser 62822xxx*`);
+      const logs = userDb.getLogsByUser(target, 15);
+      if (!logs || logs.length === 0) return reply(`📋 Tidak ada log untuk user +${target}.`);
+
+      let txt = `👤 *LOG AKTIVITAS USER +${target}*\n\n`;
+      logs.forEach((l, i) => {
+        const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        txt += `${i + 1}. [${time}] .${l.command} ${l.arguments ? `"${l.arguments.slice(0, 30)}"` : ''} [${l.status}]\n`;
+      });
+      commandExecutedSuccessfully = true;
+      return reply(txt.trim());
+    }
+
+    if (command === 'logcmd') {
+      const cmdName = (args[0] || '').toLowerCase().replace(/^[./!]/, '');
+      if (!cmdName) return reply(`Masukkan nama command!\nContoh: *${config.prefix}logcmd play*`);
+      const logs = userDb.getLogsByCommand(cmdName, 15);
+      if (!logs || logs.length === 0) return reply(`📋 Tidak ada log untuk command .${cmdName}.`);
+
+      let txt = `⌨️ *LOG COMMAND .${cmdName}*\n\n`;
+      logs.forEach((l, i) => {
+        const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        txt += `${i + 1}. [${time}] +${l.number} [${l.status}] ${l.error ? `(${l.error})` : ''}\n`;
+      });
+      commandExecutedSuccessfully = true;
+      return reply(txt.trim());
+    }
+
+    if (command === 'logerror') {
+      const logs = userDb.getErrorLogs(15);
+      if (!logs || logs.length === 0) return reply('✅ Tidak ada riwayat command yang error.');
+
+      let txt = `⚠️ *LOG COMMAND GAGAL / ERROR*\n\n`;
+      logs.forEach((l, i) => {
+        const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        txt += `${i + 1}. [${time}] .${l.command} by +${l.number}\n   ❌ Error: ${l.error || 'Unknown'}\n`;
+      });
+      commandExecutedSuccessfully = true;
+      return reply(txt.trim());
+    }
+
+    if (command === 'logdownload') {
+      const logs = userDb.getDownloadLogs(15);
+      if (!logs || logs.length === 0) return reply('📋 Belum ada riwayat aktivitas download.');
+
+      let txt = `📥 *LOG AKTIVITAS DOWNLOAD*\n\n`;
+      logs.forEach((l, i) => {
+        const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        txt += `${i + 1}. [${time}] .${l.command} ${l.arguments ? `(${l.arguments.slice(0, 30)})` : ''} by +${l.number} [${l.status}]\n`;
+      });
+      commandExecutedSuccessfully = true;
+      return reply(txt.trim());
+    }
+
+    if (command === 'loggroup') {
+      const logs = userDb.getGroupLogs(15);
+      if (!logs || logs.length === 0) return reply('📋 Belum ada log aktivitas dari grup.');
+
+      let txt = `👥 *LOG AKTIVITAS GRUP*\n\n`;
+      logs.forEach((l, i) => {
+        const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
+        txt += `${i + 1}. [${time}] [${l.group_name || 'Grup'}] .${l.command} by +${l.number} [${l.status}]\n`;
+      });
+      commandExecutedSuccessfully = true;
+      return reply(txt.trim());
+    }
+  }
   } catch (err) {
     commandHasFailed = true;
+    lastCommandError = err.message || 'Error tidak diketahui';
     console.error(`[Command Error: ${command}]`, err);
     try {
       await reply(`❌ Terjadi kesalahan pada bot: ${err.message || 'Error tidak diketahui'}`);
@@ -2684,6 +2808,41 @@ async function handleMessage(sock, msg, startTime) {
     }
     const isSuccess = !commandHasFailed;
     await stopProcessing(sock, msg, isSuccess);
+
+    // Command Logging (Pencatatan Log Eksekusi ke SQLite)
+    try {
+      const execTimeSec = ((Date.now() - cmdStartTime) / 1000).toFixed(2);
+      const logStatus = isSuccess ? 'SUCCESS' : 'FAILED';
+      const errorMsg = !isSuccess ? (lastCommandError || 'Command error') : null;
+
+      userDb.logCommand({
+        timestamp: Date.now(),
+        userId: sender,
+        number: senderNumber,
+        username: pushName || '',
+        command: command,
+        arguments: q || '',
+        chatType: isGroup ? 'group' : 'private',
+        chatId: chatId,
+        groupName: isGroup ? groupName : '',
+        status: logStatus,
+        executionTime: parseFloat(execTimeSec),
+        error: errorMsg
+      });
+
+      const timeStr = new Date().toLocaleTimeString('id-ID', { hour12: false });
+      console.log(
+        `\n[${timeStr}]\n` +
+        `USER    : ${senderNumber}\n` +
+        `NAME    : ${pushName || '-'}\n` +
+        `COMMAND : .${command}\n` +
+        `ARGS    : ${q || '-'}\n` +
+        `CHAT    : ${isGroup ? 'group' : 'private'}\n` +
+        `STATUS  : ${logStatus}\n` +
+        (errorMsg ? `ERROR   : ${errorMsg}\n` : '') +
+        `TIME    : ${execTimeSec}s`
+      );
+    } catch (_) {}
   }
 }
 

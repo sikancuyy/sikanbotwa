@@ -1,5 +1,8 @@
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
 const axios = require('axios');
 const googleTTS = require('google-tts-api');
 const config = require('../config');
@@ -115,6 +118,38 @@ async function generateTTS(text, lang = 'id') {
 }
 
 /**
+ * Konversi audio MP3 ke format WhatsApp Voice Note resmi (Ogg Opus)
+ * WhatsApp mobile mewajibkan format Ogg Opus dengan mimetype 'audio/ogg; codecs=opus'
+ * agar voice note dapat diputar dengan waveform hijau dan tidak memunculkan error
+ * "Audio ini tidak tersedia karena file audio bermasalah".
+ * 
+ * @param {string} inputMp3Path Path file audio MP3
+ * @returns {Promise<{ filePath: string, mimetype: string, ptt: boolean }>}
+ */
+async function convertToVoiceNote(inputMp3Path) {
+  const outputOpusPath = inputMp3Path.replace(/\.mp3$/i, '') + '.opus';
+  try {
+    const ffmpegCmd = `ffmpeg -y -i "${inputMp3Path}" -c:a libopus -b:a 32k -vbr on "${outputOpusPath}"`;
+    await execPromise(ffmpegCmd);
+    if (fs.existsSync(outputOpusPath) && fs.statSync(outputOpusPath).size > 0) {
+      return {
+        filePath: outputOpusPath,
+        mimetype: 'audio/ogg; codecs=opus',
+        ptt: true
+      };
+    }
+  } catch (err) {
+    console.warn('[TTS] Konversi Ogg Opus gagal, fallback ke MP3 standar:', err.message);
+  }
+
+  return {
+    filePath: inputMp3Path,
+    mimetype: 'audio/mpeg',
+    ptt: false
+  };
+}
+
+/**
  * Hapus file temporary audio dengan aman
  * @param {string} filePath
  */
@@ -130,5 +165,6 @@ function cleanTempAudio(filePath) {
 module.exports = {
   SUPPORTED_LANGS,
   generateTTS,
+  convertToVoiceNote,
   cleanTempAudio
 };

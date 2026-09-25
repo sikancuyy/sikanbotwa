@@ -15,9 +15,14 @@ module.exports = {
     education: 'Mahasiswa',
     campus: 'Politeknik Negeri Lhokseumawe',
     major: 'Teknologi Rekayasa Jaringan Telekomunikasi',
+    // Nomor yang tampil di publik (profil / kontak bot)
     phone: '0822 7725 6004',
-    number: '6282277256004',
-    jid: '6282277256004@s.whatsapp.net',
+    publicPhone: '0822 7725 6004',
+    publicNumber: '6282277256004',
+    // Nomor akun utama Owner untuk akses & kontrol bot
+    number: '6282267034994',
+    jid: '6282267034994@s.whatsapp.net',
+    numbers: ['6282267034994', '6282277256004'],
     instagram: 'rahmathaikal.05',
     email: 'rahmathaikal0506@gmail.com',
     github: 'sikancuyy'

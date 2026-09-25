@@ -479,6 +479,219 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
+  // 27. TTS convertToVoiceNote: Mengonversi MP3 menjadi WhatsApp Ogg Opus voice note resmi
+  await itAsync('27. TTS convertToVoiceNote: Menghasilkan format Ogg Opus resmi agar tidak muncul error di WhatsApp', async () => {
+    const { convertToVoiceNote } = require('../helpers/tts');
+    const mp3 = await generateTTS('Halo ini pengujian suara WhatsApp', 'id');
+    const vnInfo = await convertToVoiceNote(mp3);
+
+    assert.strictEqual(fs.existsSync(vnInfo.filePath), true);
+    assert.strictEqual(vnInfo.mimetype, 'audio/ogg; codecs=opus');
+    assert.strictEqual(vnInfo.ptt, true);
+
+    const buf = fs.readFileSync(vnInfo.filePath);
+    // Format OggS header wajib untuk WhatsApp PTT
+    assert.strictEqual(buf.slice(0, 4).toString(), 'OggS');
+
+    cleanTempAudio(mp3);
+    cleanTempAudio(vnInfo.filePath);
+  });
+
+  // 28. Konfigurasi Owner & Kontak Publik
+  it('28. Konfigurasi nomor Owner (082267034994) & kontak publik (082277256004)', () => {
+    assert.strictEqual(config.owner.number, '6282267034994');
+    assert.strictEqual(config.owner.phone, '0822 7725 6004');
+    assert.strictEqual(users.isBotAdmin('6282267034994@s.whatsapp.net'), true);
+    assert.strictEqual(users.isBotAdmin('6282277256004@s.whatsapp.net'), true);
+    assert.strictEqual(checkUserLimit('6282267034994@s.whatsapp.net', true).isUnlimited, true);
+  });
+
+  const { handleMessage } = require('../handler');
+
+  // 29. Menu bertingkat: .menu hanya menampilkan daftar kategori menu utama
+  await itAsync('29. Menu bertingkat: .menu menampilkan ringkas kategori tanpa membanjiri teks', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: content.react ? content.react.key : { id: 'MENU_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    const mockMsg = {
+      key: { remoteJid: '6287777777777@s.whatsapp.net', id: 'CMD_MENU', fromMe: false },
+      message: { conversation: '.menu' }
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+
+    const textReply = replies.find((r) => r.text && r.text.includes('MENU'));
+    assert.strictEqual(Boolean(textReply), true);
+    assert.strictEqual(textReply.text.includes('.inmenu'), true);
+    assert.strictEqual(textReply.text.includes('.indownload'), true);
+    assert.strictEqual(textReply.text.includes('.ingame'), true);
+    assert.strictEqual(textReply.text.includes('.insticker'), true);
+    assert.strictEqual(textReply.text.includes('.intts'), true);
+    assert.strictEqual(textReply.text.includes('.inuser'), true);
+    assert.strictEqual(textReply.text.includes('.intools'), true);
+    assert.strictEqual(textReply.text.includes('.ingroup'), true);
+    assert.strictEqual(textReply.text.includes('.inadmin'), true);
+    assert.strictEqual(textReply.text.includes('.inai'), true);
+    assert.strictEqual(textReply.text.includes('.ininfo'), true);
+    assert.strictEqual(textReply.text.includes('.inlog'), true);
+  });
+
+  // 30. Submenu: Memeriksa ketersediaan seluruh 13 submenu kategori
+  await itAsync('30. Submenu bertingkat (.inmenu, .indownload, .ingame, dll) menampilkan daftar command kategori masing-masing', async () => {
+    const submenus = [
+      'inmenu', 'indownload', 'insearch', 'ingame', 'insticker',
+      'intts', 'inuser', 'intools', 'ingroup', 'inadmin',
+      'inai', 'ininfo', 'inlog'
+    ];
+
+    for (const sub of submenus) {
+      const replies = [];
+      const mockSock = {
+        sendMessage: async (chat, content) => {
+          replies.push(content);
+          return { key: content.react ? content.react.key : { id: 'SUB_RES' } };
+        },
+        sendPresenceUpdate: async () => {},
+        user: { id: '6281111111111:1@s.whatsapp.net' }
+      };
+      const mockMsg = {
+        key: { remoteJid: '6287777777777@s.whatsapp.net', id: `CMD_${sub}`, fromMe: false },
+        message: { conversation: `.${sub}` }
+      };
+
+      await handleMessage(mockSock, mockMsg, Date.now());
+      const replyObj = replies.find((r) => r.text);
+      assert.strictEqual(Boolean(replyObj), true, `Submenu .${sub} harus memiliki balasan`);
+      assert.strictEqual(replyObj.text.includes('╭───〔'), true, `Submenu .${sub} harus memiliki format bingkai`);
+    }
+  });
+
+  // 31. Command inti langsung jalan tanpa harus membuka menu terlebih dahulu
+  await itAsync('31. Command inti (.ping, .bot, .me, .limit) langsung berjalan tanpa dependency submenu', async () => {
+    const directCmds = ['.ping', '.bot', '.me', '.limit'];
+
+    for (const cmd of directCmds) {
+      const replies = [];
+      const mockSock = {
+        sendMessage: async (chat, content) => {
+          replies.push(content);
+          return { key: content.react ? content.react.key : { id: 'DIRECT_RES' } };
+        },
+        sendPresenceUpdate: async () => {},
+        user: { id: '6281111111111:1@s.whatsapp.net' }
+      };
+      const mockMsg = {
+        key: { remoteJid: '6287777777777@s.whatsapp.net', id: `CMD_DIR_${cmd.slice(1)}`, fromMe: false },
+        message: { conversation: cmd }
+      };
+
+      await handleMessage(mockSock, mockMsg, Date.now());
+      const replyObj = replies.find((r) => r.text);
+      assert.strictEqual(Boolean(replyObj), true, `Command ${cmd} harus langsung merespon`);
+    }
+  });
+
+  // 32. Profil .me: Format rapi sesuai Section 18
+  await itAsync('32. Profil .me menampilkan identitas, status, limit, dan statistik command user', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: content.react ? content.react.key : { id: 'ME_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    const mockMsg = {
+      key: { remoteJid: '6285555555555@s.whatsapp.net', id: 'CMD_ME', fromMe: false },
+      message: { conversation: '.me' },
+      pushName: 'Budi Santoso'
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('MY PROFILE'));
+    assert.strictEqual(Boolean(replyObj), true);
+    assert.strictEqual(replyObj.text.includes('Budi Santoso'), true);
+    assert.strictEqual(replyObj.text.includes('Commands'), true);
+    assert.strictEqual(replyObj.text.includes('Success'), true);
+    assert.strictEqual(replyObj.text.includes('Failed'), true);
+  });
+
+  // 33. Command logging & bot statistics (.stats)
+  await itAsync('33. Command logging otomatis mencatat ke database & command .stats menampilkan rekapitulasi bot', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: content.react ? content.react.key : { id: 'STATS_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' },
+      groupFetchAllParticipating: async () => ({ 'g1@g.us': {}, 'g2@g.us': {} })
+    };
+    const mockMsg = {
+      key: { remoteJid: '6287777777777@s.whatsapp.net', id: 'CMD_STATS', fromMe: false },
+      message: { conversation: '.stats' }
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('BOT STATISTICS'));
+    assert.strictEqual(Boolean(replyObj), true);
+    assert.strictEqual(replyObj.text.includes('Uptime'), true);
+    assert.strictEqual(replyObj.text.includes('Commands'), true);
+    assert.strictEqual(replyObj.text.includes('Downloads'), true);
+    assert.strictEqual(replyObj.text.includes('Stickers'), true);
+    assert.strictEqual(replyObj.text.includes('TTS'), true);
+  });
+
+  // 34. Monitoring logs: .logs, .loguser, .logcmd, .logerror
+  await itAsync('34. Log monitoring (.logs, .loguser, .logerror) dapat diakses oleh Owner/Admin', async () => {
+    // Catat satu log uji coba
+    users.logCommand({
+      timestamp: Date.now(),
+      userId: '6282267034994@s.whatsapp.net',
+      number: '6282267034994',
+      username: 'Owner',
+      command: 'testcmd',
+      status: 'SUCCESS',
+      executionTime: 0.12
+    });
+
+    const recent = users.getRecentLogs(5);
+    assert.strictEqual(Array.isArray(recent) && recent.length > 0, true);
+    assert.strictEqual(recent[0].command, 'testcmd');
+
+    const byUser = users.getLogsByUser('6282267034994', 5);
+    assert.strictEqual(Array.isArray(byUser) && byUser.length > 0, true);
+  });
+
+  // 35. Permission check: Command admin/logs ditolak jika user biasa
+  await itAsync('35. Permission check: Command admin/log (.logs, .users) ditolak jika user bukan admin/owner', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: content.react ? content.react.key : { id: 'PERM_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    const mockMsg = {
+      key: { remoteJid: '6289999111122@s.whatsapp.net', id: 'CMD_DENIED', fromMe: false },
+      message: { conversation: '.logs' }
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('🚫'));
+    assert.strictEqual(Boolean(replyObj), true, 'User biasa harus ditolak saat mengakses .logs');
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');
