@@ -1,120 +1,229 @@
 const config = require('../config');
+let groupCacheRef = null;
+try {
+  groupCacheRef = require('./group').groupCache;
+} catch (_) {}
 
 /**
- * Validasi apakah sebuah string nomor merupakan nomor WhatsApp asli yang valid
- * (Bukan LID, bukan grup JID, bukan internal identifier WhatsApp, bukan kosong)
- * @param {string} phone
+ * Debug logger for phone number resolution
+ * Hanya mencetak saat process.env.DEBUG_PHONE_RESOLVER === 'true'
+ */
+function debugResolver(...args) {
+  if (process.env.DEBUG_PHONE_RESOLVER === 'true') {
+    console.log('[DEBUG_PHONE_RESOLVER]', ...args);
+  }
+}
+
+/**
+ * 5. VALIDASI NOMOR: isValidPhoneNumber(number)
+ * 
+ * Memeriksa apakah input merupakan nomor WhatsApp asli yang valid:
+ * - Hanya angka setelah normalisasi
+ * - Bukan null, undefined, unknown, JID mentah, ID grup (@g.us), atau LID (@lid)
+ * - Panjang 10 - 14 digit
+ * - Tidak boleh diawali '0' (harus sudah berformat kode negara, misal 62)
+ * - Format Indonesia: 62[2-9]... (10 - 14 digit)
+ * - Format Internasional resmi: [1-9]... (10 - 14 digit)
+ * 
+ * @param {string|number} number
  * @returns {boolean}
  */
-function isValidUserNumber(phone) {
-  if (!phone || typeof phone !== 'string') return false;
-  const clean = phone.replace(/[^0-9]/g, '');
+function isValidPhoneNumber(number) {
+  if (number === null || number === undefined) return false;
+  if (typeof number !== 'string' && typeof number !== 'number') return false;
 
-  // Minimal 10 digit, maksimal 13 digit untuk umum; khusus nomor Indonesia 628 bisa sampai 14 digit
+  const str = String(number).trim();
+  if (!str) return false;
+
+  // Tolak nilai literal null / undefined / unknown / NaN
+  if (/^(null|undefined|unknown|nan)$/i.test(str)) return false;
+
+  // Tolak secara eksplisit jika string berakhiran atau mengandung @lid atau @g.us
+  if (str.includes('@lid') || str.includes('@g.us') || str.includes('@broadcast') || str.includes('@newsletter')) {
+    return false;
+  }
+
+  // Bersihkan karakter non-digit
+  const clean = str.replace(/[^0-9]/g, '');
+
+  // Minimal 10 digit, maksimal 14 digit untuk nomor telepon WhatsApp
   if (clean.length < 10 || clean.length > 14) return false;
 
-  // Tidak boleh diawali 0 setelah normalisasi
+  // Tidak boleh diawali 0 (harus diawali country code)
   if (clean.startsWith('0')) return false;
 
   // Tolak ID grup WhatsApp (diawali 120363)
   if (clean.startsWith('120363')) return false;
 
-  // Format standar utama (Indonesia):
-  // 628xxxxxxxxxx (10 - 14 digit) atau nomor WhatsApp bisnis Indonesia (622... dsb)
+  // Format standar Indonesia: 62[2-9]... (10 - 14 digit)
   if (clean.startsWith('62')) {
     return /^62[2-9][0-9]{7,11}$/.test(clean);
   }
 
-  // Format nomor internasional resmi (10-13 digit, bukan LID 14-15 digit)
-  if (clean.length >= 14) return false;
-
-  return /^[1-9][0-9]{9,12}$/.test(clean);
+  // Format nomor internasional resmi (10 - 14 digit, bukan LID 15+ digit)
+  return /^[1-9][0-9]{9,13}$/.test(clean);
 }
 
 /**
- * Normalisasi nomor WhatsApp ke format standar numerik murni: 628xxxxxxxxxx
- * Tanpa +, spasi, tanda -, atau device suffix (:xx).
- * Mengubah awalan '08' menjadi '628'.
- * @param {string} rawInput
- * @returns {string|null} Nomor hasil normalisasi atau null jika tidak valid
+ * 6. NORMALISASI: normalizePhoneNumber(number)
+ * 
+ * Mengubah nomor WhatsApp ke format standar numerik murni: 628xxxxxxxxxx
+ * - Menghilangkan suffix device (:xx) dan @s.whatsapp.net
+ * - Mengubah '08' menjadi '628'
+ * - Mengubah '+62' menjadi '62'
+ * - PENTING: JANGAN melakukan normalisasi terhadap LID (@lid)! Mengembalikan null.
+ * 
+ * @param {string|number} rawInput
+ * @returns {string|null} Nomor hasil normalisasi (digits murni) atau null jika tidak valid
  */
-function normalizeUserNumber(rawInput) {
-  if (!rawInput) return null;
+function normalizePhoneNumber(rawInput) {
+  if (rawInput === null || rawInput === undefined) return null;
   let str = String(rawInput).trim();
+  if (!str) return null;
 
-  // Buang suffix server WhatsApp jika ada (@s.whatsapp.net, @lid, @g.us)
+  // Tolak jika literal 'null' / 'undefined' / 'unknown'
+  if (/^(null|undefined|unknown|nan)$/i.test(str)) return null;
+
+  // PENTING: JANGAN melakukan normalisasi terhadap LID atau Grup JID!
+  // Contoh: 123456789@lid TIDAK BOLEH menjadi 123456789!
+  if (str.includes('@lid') || str.includes('@g.us') || str.includes('@broadcast') || str.includes('@newsletter')) {
+    return null;
+  }
+
+  // Buang server domain @s.whatsapp.net / @c.us jika ada
   if (str.includes('@')) {
     const domain = str.split('@')[1];
-    // Jika domain secara eksplisit adalah @g.us, @broadcast, @newsletter, ini BUKAN nomor user!
-    if (['g.us', 'broadcast', 'newsletter'].includes(domain)) {
+    if (domain !== 's.whatsapp.net' && domain !== 'c.us') {
       return null;
     }
     str = str.split('@')[0];
   }
 
-  // Buang device ID suffix (:1, :12, :xx dsb)
+  // Buang device ID suffix (:1, :12, dsb)
   if (str.includes(':')) {
     str = str.split(':')[0];
   }
 
-  // Buang semua karakter non-digit
+  // Bersihkan semua karakter non-digit
   let digits = str.replace(/[^0-9]/g, '');
   if (!digits) return null;
 
+  // Tolak ID grup WhatsApp (120363...)
+  if (digits.startsWith('120363')) return null;
+
   // Normalisasi format Indonesia
-  // Contoh: 08123456789 -> 628123456789
   if (digits.startsWith('08')) {
     digits = '62' + digits.slice(1);
   } else if (digits.startsWith('8') && digits.length >= 9 && digits.length <= 13) {
-    // Kasus ketikan tanpa 0 di depan: 8123456789
     digits = '62' + digits;
   } else if (digits.startsWith('6208')) {
-    // Kasus typo 6208 -> 628
     digits = '628' + digits.slice(4);
+  }
+
+  // Validasi akhir
+  if (!isValidPhoneNumber(digits)) {
+    return null;
   }
 
   return digits;
 }
 
 /**
- * Resolver LID ke Nomor WhatsApp Asli jika event/library menggunakan LID.
- * Menggunakan groupMetadata.participants atau sock.store jika tersedia.
- * @param {string} lid
- * @param {object} [sock]
- * @param {object} [groupMetadata]
- * @returns {string|null} Nomor WhatsApp asli (digits) atau null jika gagal
+ * Resolver LID ke Nomor WhatsApp Asli menggunakan mekanisme Baileys & SQLite cache
+ * 
+ * @param {string} lid Identifier LID WhatsApp (misal: '207945304379644@lid')
+ * @param {object} [sock] Baileys socket object
+ * @param {object} [groupMetadata] Baileys group metadata
+ * @returns {string|null} Nomor WhatsApp asli (digits) atau null jika tidak dapat di-resolve
  */
 function resolveLidToPhone(lid, sock = null, groupMetadata = null) {
   if (!lid) return null;
   const rawLid = String(lid).trim();
   const cleanLid = rawLid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  if (!cleanLid) return null;
 
-  // 1. Cek di groupMetadata.participants jika ada
+  // 1. Cek dari SQLite persistent table lid_mappings (cepat & persisten)
+  try {
+    const usersDb = require('../database/users');
+    if (typeof usersDb.getPhoneByLid === 'function') {
+      const cachedPhone = usersDb.getPhoneByLid(cleanLid);
+      if (cachedPhone && isValidPhoneNumber(cachedPhone)) {
+        debugResolver(`LID ${cleanLid} resolved via DB cache -> ${cachedPhone}`);
+        return cachedPhone;
+      }
+    }
+  } catch (_) {}
+
+  // 2. Cek apakah LID adalah milik bot sendiri
+  if (sock) {
+    try {
+      const me = sock.user || sock.authState?.creds?.me;
+      const meLid = me?.lid ? String(me.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+      if (meLid && meLid === cleanLid) {
+        const mePhone = normalizePhoneNumber(me.id || me.jid || config.owner?.number);
+        if (mePhone && isValidPhoneNumber(mePhone)) {
+          saveMappingToDb(cleanLid, mePhone);
+          return mePhone;
+        }
+      }
+    } catch (_) {}
+  }
+
+  // 3. Cek di groupMetadata.participants jika diberikan
   if (groupMetadata && Array.isArray(groupMetadata.participants)) {
     const found = groupMetadata.participants.find((p) => {
       if (!p) return false;
-      const pLid = p.lid ? p.lid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
-      const pId = p.id ? p.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+      const pLid = p.lid ? String(p.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+      const pId = p.id ? String(p.id).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
       return (pLid && pLid === cleanLid) || (pId && pId === cleanLid);
     });
 
-    if (found && found.id && found.id.endsWith('@s.whatsapp.net')) {
-      const candidate = normalizeUserNumber(found.id);
-      if (isValidUserNumber(candidate)) {
+    if (found && found.id && !found.id.endsWith('@lid')) {
+      const candidate = normalizePhoneNumber(found.id);
+      if (candidate && isValidPhoneNumber(candidate)) {
+        saveMappingToDb(cleanLid, candidate);
+        debugResolver(`LID ${cleanLid} resolved via groupMetadata -> ${candidate}`);
         return candidate;
       }
     }
   }
 
-  // 2. Cek di sock store / contacts jika tersedia
+  // 4. Cek di memory groupCache jika ada grup lain yang sudah menyimpan data participant
+  try {
+    if (groupCacheRef && typeof groupCacheRef.values === 'function') {
+      for (const entry of groupCacheRef.values()) {
+        const metadata = entry?.data || entry;
+        if (metadata && Array.isArray(metadata.participants)) {
+          const match = metadata.participants.find((p) => {
+            if (!p) return false;
+            const pLid = p.lid ? String(p.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+            return pLid && pLid === cleanLid;
+          });
+          if (match && match.id && !match.id.endsWith('@lid')) {
+            const candidate = normalizePhoneNumber(match.id);
+            if (candidate && isValidPhoneNumber(candidate)) {
+              saveMappingToDb(cleanLid, candidate);
+              debugResolver(`LID ${cleanLid} resolved via groupCache -> ${candidate}`);
+              return candidate;
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {}
+
+  // 5. Cek di Baileys contacts store jika tersedia
   if (sock) {
     try {
       const contacts = sock.store?.contacts || sock.contacts;
       if (contacts && typeof contacts === 'object') {
         for (const [jid, contact] of Object.entries(contacts)) {
-          if (jid.endsWith('@s.whatsapp.net') && (contact.lid === rawLid || contact.lid?.includes(cleanLid))) {
-            const candidate = normalizeUserNumber(jid);
-            if (isValidUserNumber(candidate)) {
+          const cLid = contact.lid ? String(contact.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+          if (cLid && cLid === cleanLid && jid.endsWith('@s.whatsapp.net')) {
+            const candidate = normalizePhoneNumber(jid);
+            if (candidate && isValidPhoneNumber(candidate)) {
+              saveMappingToDb(cleanLid, candidate);
+              debugResolver(`LID ${cleanLid} resolved via sock.contacts -> ${candidate}`);
               return candidate;
             }
           }
@@ -123,120 +232,125 @@ function resolveLidToPhone(lid, sock = null, groupMetadata = null) {
     } catch (_) {}
   }
 
-  // Jika resolver gagal mendapatkan nomor asli, kembalikan null (jangan menebak)
+  // JANGAN PERNAH MENEBAK nomor dari angka LID!
   return null;
 }
 
 /**
- * FUNGSI UTAMA: getUserNumber()
- * Mendapatkan nomor WhatsApp asli pengirim pesan yang sedang menjalankan command.
+ * Helper simpan mapping LID -> Phone ke SQLite
+ */
+function saveMappingToDb(lid, phone) {
+  try {
+    const usersDb = require('../database/users');
+    if (typeof usersDb.saveLidMapping === 'function') {
+      usersDb.saveLidMapping(lid, phone);
+    }
+  } catch (_) {}
+}
+
+/**
+ * 1. GLOBAL PHONE NUMBER RESOLVER: getRealPhoneNumber(message, sock, groupMetadata)
  * 
- * Aturan ketat:
- * - HANYA dari pengirim pesan sebenarnya
- * - Menolak group remoteJid (@g.us)
- * - Menolak LID (@lid) kecuali berhasil di-resolve ke nomor asli
- * - Menolak quoted message participant, mentionedJid, contact list
- * - Menghasilkan format 628xxxxxxxxxx murni
+ * SATU-SATUNYA sumber nomor HP untuk seluruh sistem SikanBot.
+ * 
+ * Menangani:
+ * - Baileys message object:
+ *   • Private chat: mengambil nomor pengirim pesan
+ *   • Group chat: mengambil nomor participant (BUKAN remoteJid grup)
+ *   • fromMe: mengambil nomor bot / owner
+ * - Resolusi LID (@lid) ke nomor WhatsApp asli via Baileys API & SQLite cache
+ * - Normalisasi dan validasi nomor
  * - Mengembalikan null jika nomor tidak dapat dipastikan
  * 
- * @param {object} msg Baileys message object
+ * @param {object|string} message Baileys message object atau string JID/nomor
  * @param {object} [sock] Baileys socket object
  * @param {object} [groupMetadata] Baileys group metadata
- * @returns {string|null} Nomor WhatsApp asli (e.g. '628xxxxxxxxxx') atau null jika tidak dapat dipastikan
+ * @returns {string|null} Nomor WhatsApp asli (digits: '628xxxxxxxxxx') atau null jika tidak dapat dipastikan
  */
-function getUserNumber(msg, sock = null, groupMetadata = null) {
-  if (!msg || !msg.key) return null;
+function getRealPhoneNumber(message, sock = null, groupMetadata = null) {
+  if (!message) return null;
 
-  const key = msg.key;
-  const isGroup = Boolean(key.remoteJid && key.remoteJid.endsWith('@g.us'));
+  // Kasus 1: Input adalah string JID / nomor
+  if (typeof message === 'string') {
+    const str = message.trim();
+    if (!str) return null;
 
-  // 1. Tentukan identifier pengirim pesan yang sebenarnya
-  let candidateSender = null;
-
-  if (key.fromMe) {
-    // Pesan dari bot sendiri
-    const botId = sock?.user?.id || '';
-    if (botId) {
-      candidateSender = botId;
-    } else {
-      candidateSender = config.owner?.number ? `${config.owner.number}@s.whatsapp.net` : null;
-    }
-  } else if (isGroup) {
-    // PESAN GRUP:
-    // WAJIB diambil HANYA dari key.participant atau msg.participant!
-    // JANGAN PERNAH mengambil dari key.remoteJid (karena itu ID grup @g.us)!
-    // JANGAN mengambil dari quotedMessage atau mentionedJid!
-    candidateSender = key.participant || msg.participant || null;
-
-    if (!candidateSender) {
+    // Tolak grup JID
+    if (str.endsWith('@g.us') || str.includes('@g.us')) {
       return null;
     }
-  } else {
-    // PRIVATE CHAT (DM):
-    // Diambil dari key.remoteJid pengirim langsung
-    candidateSender = key.remoteJid;
-  }
 
-  if (!candidateSender) return null;
-
-  const senderStr = String(candidateSender).trim();
-
-  // Pastikan bukan ID grup
-  if (senderStr.endsWith('@g.us') || senderStr.includes('@g.us')) {
-    return null;
-  }
-
-  // 2. Tangani jika identifier berupa LID (@lid)
-  if (senderStr.endsWith('@lid') || senderStr.includes('@lid')) {
-    const resolved = resolveLidToPhone(senderStr, sock, groupMetadata);
-    if (resolved && isValidUserNumber(resolved)) {
-      return resolved;
+    // Jika berakhiran LID (@lid), lakukan resolusi
+    if (str.endsWith('@lid') || str.includes('@lid')) {
+      return resolveLidToPhone(str, sock, groupMetadata);
     }
-    // Jika resolver gagal mendapatkan nomor asli, kembalikan null
-    return null;
+
+    // Nomor telepon / JID biasa
+    return normalizePhoneNumber(str);
   }
 
-  // 3. Normalisasi nomor
-  const normalized = normalizeUserNumber(senderStr);
-  if (!normalized) return null;
+  // Kasus 2: Input adalah Baileys message object (msg)
+  if (typeof message === 'object') {
+    const key = message.key;
+    if (!key) {
+      // Objek participant atau contact tanpa key
+      if (message.id) return getRealPhoneNumber(message.id, sock, groupMetadata);
+      if (message.participant) return getRealPhoneNumber(message.participant, sock, groupMetadata);
+      return null;
+    }
 
-  // 4. Validasi apakah hasil normalisasi benar-benar nomor WhatsApp asli
-  if (!isValidUserNumber(normalized)) {
-    return null;
+    const chatId = key.remoteJid || '';
+    const isGroup = chatId.endsWith('@g.us');
+
+    let candidate = null;
+
+    if (key.fromMe) {
+      // Pesan dari bot sendiri
+      const botId = sock?.user?.id || sock?.authState?.creds?.me?.id || '';
+      candidate = botId || (config.owner?.number ? `${config.owner.number}@s.whatsapp.net` : null);
+    } else if (isGroup) {
+      // PESAN GRUP:
+      // HANYA ambil dari key.participant atau message.participant!
+      // JANGAN PERNAH mengambil dari key.remoteJid (karena itu ID grup @g.us)!
+      candidate = key.participant || message.participant || null;
+      if (!candidate) {
+        return null;
+      }
+    } else {
+      // PRIVATE CHAT (DM):
+      candidate = chatId;
+    }
+
+    if (!candidate) return null;
+
+    const candStr = String(candidate).trim();
+
+    // Pastikan bukan ID grup
+    if (candStr.endsWith('@g.us') || candStr.includes('@g.us')) {
+      return null;
+    }
+
+    // Jika berformat LID, resolve LID
+    if (candStr.endsWith('@lid') || candStr.includes('@lid')) {
+      return resolveLidToPhone(candStr, sock, groupMetadata);
+    }
+
+    return normalizePhoneNumber(candStr);
   }
 
-  return normalized;
+  return null;
 }
 
 /**
- * Mendapatkan JID WhatsApp resmi (@s.whatsapp.net) dari pesan atau nomor yang valid
- * @param {object|string} msgOrNumber
- * @param {object} [sock]
- * @param {object} [groupMetadata]
- * @returns {string|null}
- */
-function getUserJid(msgOrNumber, sock = null, groupMetadata = null) {
-  let num = null;
-  if (typeof msgOrNumber === 'object' && msgOrNumber !== null) {
-    num = getUserNumber(msgOrNumber, sock, groupMetadata);
-  } else {
-    num = normalizeUserNumber(msgOrNumber);
-    if (!isValidUserNumber(num)) num = null;
-  }
-  return num ? `${num}@s.whatsapp.net` : null;
-}
-
-/**
- * Mendapatkan nomor WhatsApp user dari reply chat (quoted message)
+ * Mengambil nomor WhatsApp user dari reply chat (quoted message)
  * @param {object} msg Baileys message object
  * @param {object} [sock] Baileys socket object
  * @param {object} [groupMetadata] Baileys group metadata
- * @returns {string|null} Nomor WhatsApp (digits) dari reply chat atau null jika tidak ada/tidak valid
+ * @returns {string|null} Nomor WhatsApp (digits) dari reply chat atau null
  */
-function getQuotedUserNumber(msg, sock = null, groupMetadata = null) {
+function getQuotedPhoneNumber(msg, sock = null, groupMetadata = null) {
   if (!msg) return null;
 
-  // 1. Unwrap Baileys wrappers
   let rawMessage = msg.message;
   while (
     rawMessage?.ephemeralMessage ||
@@ -252,7 +366,6 @@ function getQuotedUserNumber(msg, sock = null, groupMetadata = null) {
     );
   }
 
-  // 2. Ambil contextInfo dari berbagai tipe pesan
   const contextInfo =
     rawMessage?.extendedTextMessage?.contextInfo ||
     rawMessage?.imageMessage?.contextInfo ||
@@ -279,35 +392,53 @@ function getQuotedUserNumber(msg, sock = null, groupMetadata = null) {
 
   if (!participant) return null;
 
-  const participantStr = String(participant).trim();
-  // Tolak ID grup (@g.us)
-  if (participantStr.endsWith('@g.us') || participantStr.includes('@g.us')) {
-    return null;
-  }
+  return getRealPhoneNumber(participant, sock, groupMetadata);
+}
 
-  // Jika participant berformat LID, coba resolve
-  if (participantStr.endsWith('@lid') || participantStr.includes('@lid')) {
-    const resolved = resolveLidToPhone(participantStr, sock, groupMetadata);
-    if (resolved && isValidUserNumber(resolved)) {
-      return resolved;
-    }
-    return null;
+/**
+ * 12. TAMPILAN: formatPhoneDisplay(number)
+ * 
+ * Format nomor WhatsApp untuk tampilan publik:
+ * - Nomor valid: +628xxxxxxxxxx
+ * - Nomor null / tidak dapat di-resolve: "Tidak tersedia"
+ * - TIDAK PERNAH menghasilkan "+null" atau "+undefined"!
+ * 
+ * @param {string|number} number
+ * @returns {string} '+628xxxxxxxxxx' atau 'Tidak tersedia'
+ */
+function formatPhoneDisplay(number) {
+  const norm = normalizePhoneNumber(number);
+  if (norm && isValidPhoneNumber(norm)) {
+    return `+${norm}`;
   }
+  return 'Tidak tersedia';
+}
 
-  const normalized = normalizeUserNumber(participantStr);
-  if (normalized && isValidUserNumber(normalized)) {
-    return normalized;
-  }
-
-  return null;
+/**
+ * Mendapatkan JID resmi (@s.whatsapp.net) dari pesan atau nomor
+ * @param {object|string} msgOrNumber
+ * @param {object} [sock]
+ * @param {object} [groupMetadata]
+ * @returns {string|null}
+ */
+function getUserJid(msgOrNumber, sock = null, groupMetadata = null) {
+  const num = getRealPhoneNumber(msgOrNumber, sock, groupMetadata);
+  return num ? `${num}@s.whatsapp.net` : null;
 }
 
 module.exports = {
-  getUserNumber,
-  getQuotedUserNumber,
+  // Global primary functions
+  getRealPhoneNumber,
+  isValidPhoneNumber,
+  normalizePhoneNumber,
+  formatPhoneDisplay,
+  resolveLidToPhone,
+  getQuotedPhoneNumber,
   getUserJid,
-  normalizeUserNumber,
-  isValidUserNumber,
-  resolveLidToPhone
-};
 
+  // Backward-compatibility aliases
+  getUserNumber: getRealPhoneNumber,
+  isValidUserNumber: isValidPhoneNumber,
+  normalizeUserNumber: normalizePhoneNumber,
+  getQuotedUserNumber: getQuotedPhoneNumber
+};

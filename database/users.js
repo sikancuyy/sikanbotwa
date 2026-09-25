@@ -70,6 +70,13 @@ function initTables() {
       last_command TEXT DEFAULT '',
       updated_at INTEGER
     );
+
+    CREATE TABLE IF NOT EXISTS lid_mappings (
+      lid TEXT PRIMARY KEY,
+      phone TEXT NOT NULL,
+      updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_lid_phone ON lid_mappings(phone);
   `);
 
   // Pastikan kolom-kolom baru tersedia pada tabel users
@@ -207,6 +214,42 @@ function extractPhone(rawJid) {
   const normalized = normalizeUserNumber(rawJid);
   if (!normalized || !isValidUserNumber(normalized)) return '';
   return normalized;
+}
+
+/**
+ * Simpan pemetaan LID ke Nomor WhatsApp asli ke database
+ */
+function saveLidMapping(lid, phone) {
+  if (!lid || !phone) return;
+  const cleanLid = String(lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  const cleanPhone = extractPhone(phone);
+  if (!cleanLid || !cleanPhone) return;
+
+  try {
+    const db = getDb();
+    db.prepare(`
+      INSERT INTO lid_mappings (lid, phone, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(lid) DO UPDATE SET phone = excluded.phone, updated_at = excluded.updated_at
+    `).run(cleanLid, cleanPhone, Date.now());
+  } catch (_) {}
+}
+
+/**
+ * Cari nomor WhatsApp asli berdasarkan LID dari database
+ */
+function getPhoneByLid(lid) {
+  if (!lid) return null;
+  const cleanLid = String(lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  if (!cleanLid) return null;
+
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT phone FROM lid_mappings WHERE lid = ?').get(cleanLid);
+    return row ? row.phone : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -849,5 +892,7 @@ module.exports = {
   getGroupLogs,
   getBotStats,
   getUsersOverview,
-  getUsersPage
+  getUsersPage,
+  saveLidMapping,
+  getPhoneByLid
 };

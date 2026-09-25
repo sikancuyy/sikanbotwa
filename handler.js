@@ -39,12 +39,17 @@ const {
   getLogMenu
 } = require('./helpers/menus');
 const {
+  getRealPhoneNumber,
+  isValidPhoneNumber,
+  normalizePhoneNumber,
+  formatPhoneDisplay,
+  resolveLidToPhone,
+  getQuotedPhoneNumber,
+  getUserJid,
   getUserNumber,
   getQuotedUserNumber,
-  getUserJid,
   normalizeUserNumber,
-  isValidUserNumber,
-  resolveLidToPhone
+  isValidUserNumber
 } = require('./helpers/userHelper');
 
 // Daftar seluruh command valid bot
@@ -137,6 +142,16 @@ async function getGroupMetadataSafe(sock, chatId, forceRefresh = false) {
     ]);
     if (data) {
       groupCache.set(chatId, { data, time: now });
+      if (Array.isArray(data.participants)) {
+        for (const p of data.participants) {
+          if (p.lid && p.id && !p.id.endsWith('@lid')) {
+            const cleanPhone = normalizePhoneNumber(p.id);
+            if (cleanPhone && isValidPhoneNumber(cleanPhone)) {
+              userDb.saveLidMapping(p.lid, cleanPhone);
+            }
+          }
+        }
+      }
     }
     return data;
   } catch (err) {
@@ -262,11 +277,11 @@ async function handleMessage(sock, msg, startTime) {
   const cmdStartTime = Date.now();
   const isGroup = chatId.endsWith('@g.us');
 
-  // Ambil nomor user HANYA dari pengirim pesan yang sebenarnya menggunakan satu fungsi getUserNumber() terpusat
-  let userNumber = getUserNumber(msg, sock, null);
-  if (!userNumber && isGroup && (String(msg.key?.participant).includes('@lid') || String(msg.participant).includes('@lid'))) {
+  // SATU-SATUNYA SUMBER NOMOR HP: getRealPhoneNumber
+  let userNumber = getRealPhoneNumber(msg, sock, null);
+  if (!userNumber && isGroup && (String(msg.key?.participant).includes('@lid') || String(msg.participant).includes('@lid') || String(chatId).includes('@lid'))) {
     const gm = await getGroupMetadataSafe(sock, chatId);
-    userNumber = getUserNumber(msg, sock, gm);
+    userNumber = getRealPhoneNumber(msg, sock, gm);
   }
 
   const senderNumber = userNumber; // Format standar '628xxxxxxxxxx' numerik murni atau null
@@ -982,7 +997,7 @@ async function handleMessage(sock, msg, startTime) {
     const meText = `╭───〔 👤 MY PROFILE 〕
 │
 ├ Nama       : ${u?.name || pushName || 'User'}
-├ Nomor      : +${senderNumber}
+├ Nomor      : ${formatPhoneDisplay(senderNumber)}
 ├ Status     : ${isReg}
 ├ Role       : ${role}
 ├ Premium    : ${isPrem}
@@ -1040,7 +1055,7 @@ async function handleMessage(sock, msg, startTime) {
     const existingUser = userDb.getUser(targetJid);
     if (existingUser && existingUser.registered === 1) {
       if (isFromReply && targetPhone !== incomingPhone) {
-        return reply(`ℹ️ User dengan nomor +${targetPhone} sudah terdaftar sebagai User #${existingUser.id} (${existingUser.name}).`);
+        return reply(`ℹ️ User dengan nomor ${formatPhoneDisplay(targetPhone)} sudah terdaftar sebagai User #${existingUser.id} (${existingUser.name}).`);
       }
       return reply(`ℹ️ Kamu sudah terdaftar sebagai User #${existingUser.id}.`);
     }
@@ -1092,7 +1107,7 @@ async function handleMessage(sock, msg, startTime) {
       `✅ *PENDAFTARAN BERHASIL*\n\n` +
       `🆔 ID    : ${newUser.id}\n` +
       `👤 Nama  : ${newUser.name}\n` +
-      `📱 Nomor : +${newUser.phone}\n` +
+      `📱 Nomor : ${formatPhoneDisplay(newUser.phone)}\n` +
       `📍 Kota  : ${newUser.kota}\n` +
       `🎂 Umur  : ${newUser.umur}` +
       (isFromReply && targetPhone !== incomingPhone ? `\n\n📢 _Nomor otomatis diambil dari reply chat._` : '')
@@ -2572,17 +2587,17 @@ async function handleMessage(sock, msg, startTime) {
     if (!isOwner) return reply('❌ Perintah ini khusus untuk *Owner Bot (Rahmat Haikal)*!');
 
     if (command === 'addprem') {
-      const target = args[0] ? args[0].replace(/[^0-9]/g, '') : '';
-      if (!target) return reply(`Masukkan nomor user!\nContoh: *${config.prefix}addprem 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target) return reply(`Masukkan nomor user atau balas pesan chat user!\nContoh: *${config.prefix}addprem 62822xxx*`);
       db.updateUser(target, { premium: true });
-      return reply(`⭐ User @${target} berhasil ditambahkan ke daftar Premium!`);
+      return reply(`⭐ User ${formatPhoneDisplay(target)} berhasil ditambahkan ke daftar Premium!`);
     }
 
     if (command === 'delprem') {
-      const target = args[0] ? args[0].replace(/[^0-9]/g, '') : '';
-      if (!target) return reply(`Masukkan nomor user!\nContoh: *${config.prefix}delprem 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target) return reply(`Masukkan nomor user atau balas pesan chat user!\nContoh: *${config.prefix}delprem 62822xxx*`);
       db.updateUser(target, { premium: false });
-      return reply(`User @${target} telah dihapus dari Premium.`);
+      return reply(`User ${formatPhoneDisplay(target)} telah dihapus dari Premium.`);
     }
 
     if (command === 'listprem') {
@@ -2590,22 +2605,22 @@ async function handleMessage(sock, msg, startTime) {
       const prems = Object.keys(users).filter((k) => users[k].premium);
       if (prems.length === 0) return reply('Belum ada user premium.');
       let out = `👑 *DAFTAR USER PREMIUM (${prems.length})*\n\n`;
-      prems.forEach((p, i) => { out += `${i + 1}. @${p}\n`; });
+      prems.forEach((p, i) => { out += `${i + 1}. ${formatPhoneDisplay(p)}\n`; });
       return reply(out);
     }
 
     if (command === 'ban') {
-      const target = args[0] ? args[0].replace(/[^0-9]/g, '') : '';
-      if (!target) return reply(`Masukkan nomor yang ingin diban!\nContoh: *${config.prefix}ban 628xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target) return reply(`Masukkan nomor yang ingin diban atau balas pesan chat user!\nContoh: *${config.prefix}ban 628xxx*`);
       db.updateUser(target, { banned: true });
-      return reply(`🚫 User @${target} telah dibanned dari bot!`);
+      return reply(`🚫 User ${formatPhoneDisplay(target)} telah dibanned dari bot!`);
     }
 
     if (command === 'unban') {
-      const target = args[0] ? args[0].replace(/[^0-9]/g, '') : '';
-      if (!target) return reply(`Masukkan nomor yang ingin di-unban!\nContoh: *${config.prefix}unban 628xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target) return reply(`Masukkan nomor yang ingin di-unban atau balas pesan chat user!\nContoh: *${config.prefix}unban 628xxx*`);
       db.updateUser(target, { banned: false });
-      return reply(`✅ User @${target} telah di-unban.`);
+      return reply(`✅ User ${formatPhoneDisplay(target)} telah di-unban.`);
     }
 
     if (command === 'block') {
@@ -2680,19 +2695,19 @@ async function handleMessage(sock, msg, startTime) {
     // addadmin & deladmin khusus Owner
     if (['addadmin', 'deladmin'].includes(command)) {
       if (!isOwner) return reply('❌ Perintah ini khusus untuk *Owner Bot (Rahmat Haikal)*!');
-      const target = normalizeUserNumber(args[0]);
-      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor yang dituju!\nContoh: *${config.prefix}${command} 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target || !isValidPhoneNumber(target)) return reply(`Masukkan nomor yang dituju atau balas pesan chat user!\nContoh: *${config.prefix}${command} 62822xxx*`);
 
       if (command === 'addadmin') {
         userDb.addBotAdmin(target);
         commandExecutedSuccessfully = true;
-        return reply(`👑 Berhasil mengangkat +${target} sebagai *Admin Bot*! Sekarang user ini memiliki akses kelola user & bebas limit.`);
+        return reply(`👑 Berhasil mengangkat ${formatPhoneDisplay(target)} sebagai *Admin Bot*! Sekarang user ini memiliki akses kelola user & bebas limit.`);
       }
 
       if (command === 'deladmin') {
         userDb.removeBotAdmin(target);
         commandExecutedSuccessfully = true;
-        return reply(`✅ Berhasil mencabut hak Admin Bot dari +${target}.`);
+        return reply(`✅ Berhasil mencabut hak Admin Bot dari ${formatPhoneDisplay(target)}.`);
       }
     }
 
@@ -2706,7 +2721,7 @@ async function handleMessage(sock, msg, startTime) {
         text += '\n_Belum ada admin tambahan._';
       } else {
         admins.forEach((a, i) => {
-          text += `${i + 1}. +${a.phone} ${a.name ? `(${a.name})` : ''}\n`;
+          text += `${i + 1}. ${formatPhoneDisplay(a.phone)} ${a.name ? `(${a.name})` : ''}\n`;
         });
       }
       commandExecutedSuccessfully = true;
@@ -2718,7 +2733,7 @@ async function handleMessage(sock, msg, startTime) {
       let targetName = null;
 
       // Cek apakah admin me-reply chat user
-      const quotedNum = getQuotedUserNumber(msg, sock, groupMetadata);
+      const quotedNum = getQuotedPhoneNumber(msg, sock, groupMetadata);
       if (quotedNum && (!botNumber || quotedNum !== botNumber)) {
         targetNum = quotedNum;
         targetName = q.trim();
@@ -2726,11 +2741,11 @@ async function handleMessage(sock, msg, startTime) {
 
       if (!targetNum && q && q.includes('|')) {
         const parts = q.split('|').map((s) => s.trim());
-        targetNum = normalizeUserNumber(parts[0]);
+        targetNum = normalizePhoneNumber(parts[0]);
         targetName = parts[1] || '';
       }
 
-      if (!targetNum || !isValidUserNumber(targetNum) || !targetName) {
+      if (!targetNum || !isValidPhoneNumber(targetNum) || !targetName) {
         return reply(
           `Format pendaftaran user oleh admin:\n` +
           `• Balas pesan user lalu ketik: *${config.prefix}daftaruser <nama lengkap>*\n` +
@@ -2744,7 +2759,7 @@ async function handleMessage(sock, msg, startTime) {
       return reply(
         `✅ *REGISTRASI USER BERHASIL (BY ADMIN)*\n\n` +
         `• Nama   : ${targetName}\n` +
-        `• Nomor  : +${targetNum}\n` +
+        `• Nomor  : ${formatPhoneDisplay(targetNum)}\n` +
         `• Status : UNLIMITED ♾️\n\n` +
         `User berhasil didaftarkan dan mendapatkan akses tanpa batas.`
       );
@@ -2820,7 +2835,7 @@ async function handleMessage(sock, msg, startTime) {
         `✅ *Berhasil Dihapus (${deletedUsers.length} user):*\n`;
       deletedUsers.forEach((u) => {
         const statusNotif = u.notified ? '📢 [Tersiar]' : '⚠️ [Gagal Notif]';
-        out += `• #${u.id} - ${u.name} (+${u.phone}) ${statusNotif}\n`;
+        out += `• #${u.id} - ${u.name} (${formatPhoneDisplay(u.phone)}) ${statusNotif}\n`;
       });
 
       if (notFoundTargets.length > 0) {
@@ -2893,7 +2908,7 @@ async function handleMessage(sock, msg, startTime) {
           const num = ((data.page - 1) * data.pageSize) + (i + 1);
           const roleBadge = u.role === 'owner' ? ' [OWNER]' : (u.role === 'admin' ? ' [ADMIN]' : (u.premium ? ' [PREMIUM]' : ''));
           const limText = (u.unlimited || u.limit_type === 'unlimited') ? 'UNLIMITED' : `LIMIT: ${u.limit ?? 50}`;
-          txt += `├ ${num}. ${u.name || 'User'} (+${u.phone})${roleBadge}\n│  └ Status: ${limText} | Cmd: ${u.total_commands || 0}\n`;
+          txt += `├ ${num}. ${u.name || 'User'} (${formatPhoneDisplay(u.phone)})${roleBadge}\n│  └ Status: ${limText} | Cmd: ${u.total_commands || 0}\n`;
         });
         txt += `╰────────────────\n• Total User: ${data.total}\n• Ketik *${config.prefix}listuser ${data.page + 1}* untuk halaman berikutnya.`;
         commandExecutedSuccessfully = true;
@@ -2917,8 +2932,8 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
     }
 
     if (command === 'userinfo') {
-      const target = normalizeUserNumber(args[0]);
-      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}userinfo 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target || !isValidPhoneNumber(target)) return reply(`Masukkan nomor pengguna yang valid atau balas pesan chat user!\nContoh: *${config.prefix}userinfo 62822xxx*`);
       const info = userDb.getUserInfo(target);
       if (!info) return reply('❌ Pengguna tidak ditemukan di database.');
 
@@ -2934,7 +2949,7 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       const infoText = `╭───〔 👤 USER INFORMATION 〕
 │
 ├ Name       : ${info.name || '-'}
-├ Number     : ${info.phone || target}
+├ Number     : ${formatPhoneDisplay(info.phone || target)}
 ├ ID         : ${info.id || '-'}
 ├ Registered : ${isReg}
 ├ Role       : ${info.is_admin ? 'Admin Bot' : (info.role || 'User')}
@@ -2954,31 +2969,31 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
     }
 
     if (command === 'resetlimit') {
-      const target = normalizeUserNumber(args[0]);
-      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}resetlimit 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target || !isValidPhoneNumber(target)) return reply(`Masukkan nomor pengguna yang valid atau balas pesan chat user!\nContoh: *${config.prefix}resetlimit 62822xxx*`);
       const ok = userDb.resetLimit(target);
       if (ok) {
         commandExecutedSuccessfully = true;
-        return reply(`✅ Limit penggunaan untuk +${target} berhasil direset menjadi 0.`);
+        return reply(`✅ Limit penggunaan untuk ${formatPhoneDisplay(target)} berhasil direset menjadi 0.`);
       } else {
         return reply('❌ Pengguna tidak ditemukan atau gagal mereset limit.');
       }
     }
 
     if (command === 'setunlimited') {
-      const target = normalizeUserNumber(args[0]);
-      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}setunlimited 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target || !isValidPhoneNumber(target)) return reply(`Masukkan nomor pengguna yang valid atau balas pesan chat user!\nContoh: *${config.prefix}setunlimited 62822xxx*`);
       userDb.setUnlimited(target);
       commandExecutedSuccessfully = true;
-      return reply(`✅ Berhasil mengubah status pengguna +${target} menjadi UNLIMITED.`);
+      return reply(`✅ Berhasil mengubah status pengguna ${formatPhoneDisplay(target)} menjadi UNLIMITED.`);
     }
 
     if (command === 'setlimit') {
-      const target = normalizeUserNumber(args[0]);
-      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}setlimit 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target || !isValidPhoneNumber(target)) return reply(`Masukkan nomor pengguna yang valid atau balas pesan chat user!\nContoh: *${config.prefix}setlimit 62822xxx*`);
       userDb.setLimit(target);
       commandExecutedSuccessfully = true;
-      return reply(`✅ Berhasil mengembalikan status pengguna +${target} menjadi LIMITED (maks 50).`);
+      return reply(`✅ Berhasil mengembalikan status pengguna ${formatPhoneDisplay(target)} menjadi LIMITED (maks 50).`);
     }
   }
 
@@ -3065,19 +3080,19 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       let txt = `📊 *LOG COMMAND TERAKHIR (${logs.length})*\n\n`;
       logs.forEach((l, i) => {
         const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
-        txt += `${i + 1}. [${time}] *${l.command}* by +${l.number} [${l.status}]${l.error ? `\n   ⚠️ Error: ${l.error}` : ''}\n`;
+        txt += `${i + 1}. [${time}] *${l.command}* by ${formatPhoneDisplay(l.number)} [${l.status}]${l.error ? `\n   ⚠️ Error: ${l.error}` : ''}\n`;
       });
       commandExecutedSuccessfully = true;
       return reply(txt.trim());
     }
 
     if (command === 'loguser') {
-      const target = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!target) return reply(`Masukkan nomor user!\nContoh: *${config.prefix}loguser 62822xxx*`);
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target) return reply(`Masukkan nomor user atau balas pesan chat user!\nContoh: *${config.prefix}loguser 62822xxx*`);
       const logs = userDb.getLogsByUser(target, 15);
-      if (!logs || logs.length === 0) return reply(`📋 Tidak ada log untuk user +${target}.`);
+      if (!logs || logs.length === 0) return reply(`📋 Tidak ada log untuk user ${formatPhoneDisplay(target)}.`);
 
-      let txt = `👤 *LOG AKTIVITAS USER +${target}*\n\n`;
+      let txt = `👤 *LOG AKTIVITAS USER ${formatPhoneDisplay(target)}*\n\n`;
       logs.forEach((l, i) => {
         const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
         txt += `${i + 1}. [${time}] .${l.command} ${l.arguments ? `"${l.arguments.slice(0, 30)}"` : ''} [${l.status}]\n`;
@@ -3095,7 +3110,7 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       let txt = `⌨️ *LOG COMMAND .${cmdName}*\n\n`;
       logs.forEach((l, i) => {
         const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
-        txt += `${i + 1}. [${time}] +${l.number} [${l.status}] ${l.error ? `(${l.error})` : ''}\n`;
+        txt += `${i + 1}. [${time}] ${formatPhoneDisplay(l.number)} [${l.status}] ${l.error ? `(${l.error})` : ''}\n`;
       });
       commandExecutedSuccessfully = true;
       return reply(txt.trim());
@@ -3108,7 +3123,7 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       let txt = `⚠️ *LOG COMMAND GAGAL / ERROR*\n\n`;
       logs.forEach((l, i) => {
         const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
-        txt += `${i + 1}. [${time}] .${l.command} by +${l.number}\n   ❌ Error: ${l.error || 'Unknown'}\n`;
+        txt += `${i + 1}. [${time}] .${l.command} by ${formatPhoneDisplay(l.number)}\n   ❌ Error: ${l.error || 'Unknown'}\n`;
       });
       commandExecutedSuccessfully = true;
       return reply(txt.trim());
@@ -3121,7 +3136,7 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       let txt = `📥 *LOG AKTIVITAS DOWNLOAD*\n\n`;
       logs.forEach((l, i) => {
         const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
-        txt += `${i + 1}. [${time}] .${l.command} ${l.arguments ? `(${l.arguments.slice(0, 30)})` : ''} by +${l.number} [${l.status}]\n`;
+        txt += `${i + 1}. [${time}] .${l.command} ${l.arguments ? `(${l.arguments.slice(0, 30)})` : ''} by ${formatPhoneDisplay(l.number)} [${l.status}]\n`;
       });
       commandExecutedSuccessfully = true;
       return reply(txt.trim());
@@ -3134,7 +3149,7 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       let txt = `👥 *LOG AKTIVITAS GRUP*\n\n`;
       logs.forEach((l, i) => {
         const time = new Date(l.timestamp).toLocaleTimeString('id-ID', { hour12: false });
-        txt += `${i + 1}. [${time}] [${l.group_name || 'Grup'}] .${l.command} by +${l.number} [${l.status}]\n`;
+        txt += `${i + 1}. [${time}] [${l.group_name || 'Grup'}] .${l.command} by ${formatPhoneDisplay(l.number)} [${l.status}]\n`;
       });
       commandExecutedSuccessfully = true;
       return reply(txt.trim());

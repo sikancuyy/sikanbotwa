@@ -993,6 +993,7 @@ async function runAllTests() {
     const msgLid = {
       key: { remoteJid: '1203630283928192@g.us', participant: '207945304379644@lid', fromMe: false }
     };
+    uDb.getDb().prepare('DELETE FROM lid_mappings WHERE lid = ?').run('207945304379644');
     // LID tanpa mapping harus menghasilkan null
     assert.strictEqual(getUserNumber(msgLid), null);
 
@@ -1260,6 +1261,104 @@ async function runAllTests() {
     assert.strictEqual(Boolean(userRegByAdmin), true, 'User harus terdaftar via .daftaruser reply');
     assert.strictEqual(userRegByAdmin.name, 'Teuku Umar');
     assert.strictEqual(userRegByAdmin.phone, '6287711223344');
+  });
+
+  // 56. Global Phone Resolver getRealPhoneNumber: private, group, LID, group JID
+  it('56. getRealPhoneNumber menjadi satu-satunya resolver nomor asli user (private, grup, LID, validasi)', () => {
+    const { getRealPhoneNumber, normalizePhoneNumber, isValidPhoneNumber } = require('../helpers/userHelper');
+
+    // Private chat dengan JID nomor biasa
+    const msgDM = { key: { remoteJid: '6281234567890@s.whatsapp.net', fromMe: false } };
+    assert.strictEqual(getRealPhoneNumber(msgDM), '6281234567890');
+
+    // Group chat: WAJIB mengambil participant, BUKAN remoteJid grup
+    const msgGroup = {
+      key: { remoteJid: '1203630283928192@g.us', participant: '6289988776655@s.whatsapp.net', fromMe: false }
+    };
+    assert.strictEqual(getRealPhoneNumber(msgGroup), '6289988776655');
+
+    // Group JID secara langsung harus ditolak
+    assert.strictEqual(getRealPhoneNumber('1203630283928192@g.us'), null);
+    assert.strictEqual(normalizePhoneNumber('1203630283928192@g.us'), null);
+    assert.strictEqual(isValidPhoneNumber('1203630283928192'), false);
+
+    // LID tanpa mapping TIDAK BOLEH diambil angkanya
+    assert.strictEqual(getRealPhoneNumber('555444333222111@lid'), null);
+    assert.strictEqual(normalizePhoneNumber('555444333222111@lid'), null);
+
+    // Nilai null, undefined, unknown
+    assert.strictEqual(getRealPhoneNumber(null), null);
+    assert.strictEqual(getRealPhoneNumber(undefined), null);
+    assert.strictEqual(normalizePhoneNumber('null'), null);
+    assert.strictEqual(normalizePhoneNumber('undefined'), null);
+    assert.strictEqual(isValidPhoneNumber('unknown'), false);
+  });
+
+  // 57. Normalisasi format 08, 628, dan validasi konsistensi
+  it('57. normalizePhoneNumber mengubah 08 dan +62 ke format 628xxxxxxxxxx murni', () => {
+    const { normalizePhoneNumber, isValidPhoneNumber } = require('../helpers/userHelper');
+
+    assert.strictEqual(normalizePhoneNumber('082267034994'), '6282267034994');
+    assert.strictEqual(normalizePhoneNumber('+6282267034994'), '6282267034994');
+    assert.strictEqual(normalizePhoneNumber('6282267034994:5@s.whatsapp.net'), '6282267034994');
+    assert.strictEqual(isValidPhoneNumber('6282267034994'), true);
+  });
+
+  // 58. Command .me tidak pernah menghasilkan +null
+  await itAsync('58. Command .me menampilkan nomor valid atau "Tidak tersedia" dan tidak pernah +null', async () => {
+    const { formatPhoneDisplay } = require('../helpers/userHelper');
+
+    assert.strictEqual(formatPhoneDisplay('6282267034994'), '+6282267034994');
+    assert.strictEqual(formatPhoneDisplay(null), 'Tidak tersedia');
+    assert.strictEqual(formatPhoneDisplay(undefined), 'Tidak tersedia');
+    assert.strictEqual(formatPhoneDisplay('207945304379644@lid'), 'Tidak tersedia');
+
+    const sentMessages = [];
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_ME_' + Date.now() } };
+      }
+    };
+
+    // User anonim di grup dengan LID yang gagal resolve
+    const msgLidUnresolved = {
+      key: {
+        remoteJid: '1203630283928192@g.us',
+        participant: '999888777666555@lid',
+        fromMe: false
+      },
+      message: { conversation: '.me' }
+    };
+
+    await handleMessage(mockSock, msgLidUnresolved);
+    const textReply = sentMessages.find((m) => m.content && m.content.text);
+    assert.strictEqual(Boolean(textReply), true, 'Harus ada balasan teks profil');
+    assert.strictEqual(textReply.content.text.includes('+null'), false, 'TIDAK BOLEH mengandung +null');
+    assert.strictEqual(textReply.content.text.includes('Nomor      : Tidak tersedia'), true, 'Harus menampilkan "Tidak tersedia"');
+  });
+
+  // 59. Persistent LID mapping: SQLite lid_mappings mengingat LID user di private chat
+  it('59. SQLite lid_mappings mengingat LID user secara persisten untuk private chat', () => {
+    const { getRealPhoneNumber } = require('../helpers/userHelper');
+
+    // Simpan pemetaan LID -> Phone
+    users.saveLidMapping('777666555444333@lid', '6281399887766');
+
+    // Cek di DB
+    const phone = users.getPhoneByLid('777666555444333@lid');
+    assert.strictEqual(phone, '6281399887766');
+
+    // Panggilan getRealPhoneNumber pada string LID harus berhasil di-resolve dari DB
+    const resolved = getRealPhoneNumber('777666555444333@lid');
+    assert.strictEqual(resolved, '6281399887766');
+
+    // Pesan private dengan remoteJid LID yang sudah tersimpan di database
+    const msgPrivateLid = {
+      key: { remoteJid: '777666555444333@lid', fromMe: false }
+    };
+    assert.strictEqual(getRealPhoneNumber(msgPrivateLid), '6281399887766');
   });
 
   console.log('\n====================================================');

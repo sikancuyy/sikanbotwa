@@ -23,7 +23,8 @@ const {
 } = require('./utils');
 const { checkYtDlpAvailable } = require('./downloader');
 const { handleMessage } = require('./handler');
-const { normalizeUserNumber, isValidUserNumber, resolveLidToPhone } = require('./helpers/userHelper');
+const userDb = require('./database/users');
+const { getRealPhoneNumber, normalizePhoneNumber, isValidPhoneNumber } = require('./helpers/userHelper');
 
 // Waktu mulai bot untuk kalkulasi uptime
 const startTime = Date.now();
@@ -137,12 +138,20 @@ async function startBot() {
       const groupMetadata = await sock.groupMetadata(id).catch(() => null);
       const groupName = groupMetadata ? groupMetadata.subject : 'Grup';
 
-      for (const participant of participants) {
-        let userNum = normalizeUserNumber(participant);
-        if ((!userNum || !isValidUserNumber(userNum)) && String(participant).includes('@lid')) {
-          userNum = resolveLidToPhone(participant, sock, groupMetadata);
+      if (groupMetadata && Array.isArray(groupMetadata.participants)) {
+        for (const p of groupMetadata.participants) {
+          if (p.lid && p.id && !p.id.endsWith('@lid')) {
+            const clean = normalizePhoneNumber(p.id);
+            if (clean && isValidPhoneNumber(clean)) {
+              userDb.saveLidMapping(p.lid, clean);
+            }
+          }
         }
-        if (!userNum || !isValidUserNumber(userNum)) {
+      }
+
+      for (const participant of participants) {
+        const userNum = getRealPhoneNumber(participant, sock, groupMetadata);
+        if (!userNum) {
           // Abaikan jika bukan nomor WhatsApp asli
           continue;
         }
