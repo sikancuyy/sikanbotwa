@@ -175,7 +175,7 @@ function getToolsMenu() {
 ├ ${p}ssweb
 ├ ${p}ocr
 ├ ${p}weather
-├ ${p}rvo (buka foto/video view once)
+├ ${p}kan (buka foto/video view once)
 ╰────────────────`;
 }
 

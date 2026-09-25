@@ -93,7 +93,7 @@ const VALID_COMMANDS = new Set([
   'tts',
 
   // Tools
-  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'rvo',
+  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'kan',
 
   // Group Management
   'antilink', 'antispam', 'welcome', 'groupinfo', 'linkgroup', 'revoke',
@@ -138,7 +138,7 @@ function extractViewOnceMedia(rawQuoted) {
 
   // Telusuri kemungkinan pembungkus (wrapper)
   let loopCount = 0;
-  while (loopCount < 6 && current) {
+  while (loopCount < 8 && current) {
     loopCount++;
     if (current.viewOnceMessage) {
       isViewOnce = true;
@@ -153,6 +153,8 @@ function extractViewOnceMedia(rawQuoted) {
       current = current.ephemeralMessage.message;
     } else if (current.documentWithCaptionMessage?.message) {
       current = current.documentWithCaptionMessage.message;
+    } else if (current.message) {
+      current = current.message;
     } else {
       break;
     }
@@ -353,18 +355,29 @@ async function handleMessage(sock, msg, startTime) {
     rawMessage?.ephemeralMessage ||
     rawMessage?.viewOnceMessage ||
     rawMessage?.viewOnceMessageV2 ||
+    rawMessage?.viewOnceMessageV2Extension ||
     rawMessage?.documentWithCaptionMessage
   ) {
     rawMessage = (
       rawMessage.ephemeralMessage?.message ||
       rawMessage.viewOnceMessage?.message ||
       rawMessage.viewOnceMessageV2?.message ||
+      rawMessage.viewOnceMessageV2Extension?.message ||
       rawMessage.documentWithCaptionMessage?.message
     );
   }
 
-  // 2. Simpan Quoted Message asli sebelum unwrap (untuk fitur seperti RVO View Once)
-  const rawQuotedMessage = rawMessage?.extendedTextMessage?.contextInfo?.quotedMessage || null;
+  // 2. Simpan Quoted Message asli sebelum unwrap (untuk fitur seperti KAN / RVO View Once)
+  const contextInfo =
+    rawMessage?.extendedTextMessage?.contextInfo ||
+    rawMessage?.imageMessage?.contextInfo ||
+    rawMessage?.videoMessage?.contextInfo ||
+    rawMessage?.documentMessage?.contextInfo ||
+    rawMessage?.buttonsResponseMessage?.contextInfo ||
+    rawMessage?.templateButtonReplyMessage?.contextInfo ||
+    msg.message?.extendedTextMessage?.contextInfo ||
+    null;
+  const rawQuotedMessage = contextInfo?.quotedMessage || null;
   let quotedMessage = rawQuotedMessage;
   while (
     quotedMessage?.ephemeralMessage ||
@@ -912,8 +925,9 @@ async function handleMessage(sock, msg, startTime) {
     'tr': 'translate',
     'ss': 'ssweb',
     'cuaca': 'weather',
-    'rvo': 'rvo',
-    'viewonce': 'rvo',
+    'kan': 'kan',
+    'rvo': 'kan',
+    'viewonce': 'kan',
     // Group
     'infogc': 'groupinfo',
     'linkgc': 'linkgroup',
@@ -969,7 +983,7 @@ async function handleMessage(sock, msg, startTime) {
     'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly',
     'stickerlysearch', 'telestick', 'tenor', 'stickersearch', 'ryo',
     // Tools
-    'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc', 'rvo',
+    'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc',
     // AI
     'ai', 'ask', 'imagine', 'summarize',
     // TTS
@@ -2677,7 +2691,17 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     }
   }
 
-  if (command === 'rvo') {
+  if (command === 'kan') {
+    if (isGroup) {
+      await loadGroupInfo();
+    }
+    const isBotAdminUser = Boolean(userDb && typeof userDb.isBotAdmin === 'function' && userDb.isBotAdmin(sender));
+    const isUserAdmin = isAdmin || isBotAdminUser;
+
+    if (!isOwner && !isUserAdmin) {
+      return reply('❌ Perintah ini hanya dapat digunakan oleh Admin dan Owner!');
+    }
+
     if (!rawQuotedMessage) {
       return reply('❌ Reply foto/video View Once terlebih dahulu.');
     }
@@ -2697,6 +2721,12 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
         return reply('❌ Gagal mengambil media View Once.');
       }
 
+      // Lindungi bot dari file media raksasa (> 100MB)
+      const MAX_MEDIA_SIZE = 100 * 1024 * 1024;
+      if (mediaBuffer.length > MAX_MEDIA_SIZE) {
+        return reply('❌ Ukuran media terlalu besar untuk dikirim.');
+      }
+
       if (vo.mediaType === 'image') {
         await sock.sendMessage(chatId, {
           image: mediaBuffer,
@@ -2712,7 +2742,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
 
       commandExecutedSuccessfully = true;
     } catch (err) {
-      console.error('[RVO Error]', err);
+      console.error('[KAN Error]', err);
       return reply('❌ Gagal mengambil media View Once.');
     }
     return;
@@ -3613,5 +3643,7 @@ module.exports = {
   stopTyping,
   setReaction,
   setProcessingReaction,
-  VALID_COMMANDS
+  VALID_COMMANDS,
+  extractViewOnceMedia,
+  getMediaBuffer
 };

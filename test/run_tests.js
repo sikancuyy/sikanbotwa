@@ -1893,8 +1893,8 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
-  // 76. Fitur .rvo (Reply View Once): Validasi reply, deteksi View Once foto & video, serta status response
-  await itAsync('76. Fitur .rvo (Reply View Once): Validasi reply foto & video View Once dan penolakan non-View Once', async () => {
+  // 76. Fitur .kan (Pengganti .rvo View Once): Pembatasan akses Admin/Owner, validasi reply, deteksi View Once foto & video
+  await itAsync('76. Fitur .kan: Pembatasan akses Admin/Owner dan validasi reply media View Once', async () => {
     processingStatus.resetProcessing();
     const sentMessages = [];
     const reactions = [];
@@ -1906,32 +1906,47 @@ async function runAllTests() {
         if (content && content.react) {
           reactions.push(content.react);
         }
-        return { key: { id: 'MSG_RES_RVO_' + Date.now() } };
+        return { key: { id: 'MSG_RES_KAN_' + Date.now() } };
       },
       sendPresenceUpdate: async () => {}
     };
 
-    // 1. .rvo tanpa me-reply pesan apapun
+    // 1. .kan oleh user biasa (bukan Admin / Owner) harus ditolak
+    const mockMsgNonAdmin = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_KAN_DENIED', fromMe: false },
+      message: { conversation: '.kan' }
+    };
+    await handleMessage(mockSock, mockMsgNonAdmin);
+
+    const errDenied = sentMessages.find((m) => m.content?.text && m.content.text.includes('Perintah ini hanya dapat digunakan oleh Admin dan Owner!'));
+    assert.strictEqual(Boolean(errDenied), true, 'Harus menolak user non-admin dan non-owner');
+    assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ saat ditolak hak akses');
+
+    // 2. .kan oleh Owner tanpa me-reply pesan apapun
+    sentMessages.length = 0;
+    reactions.length = 0;
+    processingStatus.resetProcessing();
+
     const mockMsgNoReply = {
-      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_NO_REPLY', fromMe: false },
-      message: { conversation: '.rvo' }
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_KAN_NO_REPLY', fromMe: false },
+      message: { conversation: '.kan' }
     };
     await handleMessage(mockSock, mockMsgNoReply);
 
     const errNoReply = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
-    assert.strictEqual(Boolean(errNoReply), true, 'Harus meminta reply pesan View Once');
+    assert.strictEqual(Boolean(errNoReply), true, 'Harus meminta reply pesan View Once bagi Owner');
     assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika tidak ada reply');
 
-    // 2. .rvo me-reply pesan teks biasa (bukan View Once)
+    // 3. .kan oleh Owner me-reply pesan teks biasa (bukan View Once)
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
     const mockMsgTextReply = {
-      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_TEXT_REPLY', fromMe: false },
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_KAN_TEXT_REPLY', fromMe: false },
       message: {
         extendedTextMessage: {
-          text: '.rvo',
+          text: '.kan',
           contextInfo: {
             quotedMessage: {
               conversation: 'Halo ini teks biasa'
@@ -1946,16 +1961,16 @@ async function runAllTests() {
     assert.strictEqual(Boolean(errNotVo), true, 'Harus menolak jika pesan bukan View Once');
     assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika bukan View Once');
 
-    // 3. .rvo me-reply foto biasa (non-View Once)
+    // 4. .kan oleh Owner me-reply foto biasa (non-View Once)
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
     const mockMsgNormalImage = {
-      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_NORMAL_IMG', fromMe: false },
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_KAN_NORMAL_IMG', fromMe: false },
       message: {
         extendedTextMessage: {
-          text: '.rvo',
+          text: '.kan',
           contextInfo: {
             quotedMessage: {
               imageMessage: {
@@ -1972,7 +1987,122 @@ async function runAllTests() {
     const errNormalImg = sentMessages.find((m) => m.content?.text && m.content.text.includes('Pesan yang di-reply bukan View Once.'));
     assert.strictEqual(Boolean(errNormalImg), true, 'Harus menolak jika foto bukan View Once');
 
+    // 5. Alias .rvo tetap berfungsi dan diarahkan ke .kan untuk Owner
+    sentMessages.length = 0;
+    reactions.length = 0;
     processingStatus.resetProcessing();
+
+    const mockMsgAliasRvo = {
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_RVO_ALIAS', fromMe: false },
+      message: { conversation: '.rvo' }
+    };
+    await handleMessage(mockSock, mockMsgAliasRvo);
+
+    const errAliasNoReply = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
+    assert.strictEqual(Boolean(errAliasNoReply), true, 'Alias .rvo harus diteruskan ke handler View Once');
+
+    processingStatus.resetProcessing();
+  });
+
+  // 77. Fitur .rvo: Ekstraksi dan deteksi struktur View Once Baileys (viewOnceMessage, viewOnceMessageV2, viewOnceMessageV2Extension, ephemeral, viewOnce flag)
+  it('77. Fitur .rvo: Ekstraksi dan deteksi struktur View Once Baileys (V1, V2, V2Extension, Ephemeral, dan Direct Flag)', () => {
+    const { extractViewOnceMedia } = require('../handler');
+
+    // 1. viewOnceMessage V1 (Image dengan caption)
+    const vo1 = extractViewOnceMedia({
+      viewOnceMessage: {
+        message: {
+          imageMessage: {
+            mimetype: 'image/jpeg',
+            caption: 'Foto rahasia V1'
+          }
+        }
+      }
+    });
+    assert.strictEqual(vo1.isViewOnce, true);
+    assert.strictEqual(vo1.mediaType, 'image');
+    assert.strictEqual(vo1.caption, 'Foto rahasia V1');
+    assert.strictEqual(vo1.mimetype, 'image/jpeg');
+
+    // 2. viewOnceMessageV2 (Video dengan caption)
+    const vo2 = extractViewOnceMedia({
+      viewOnceMessageV2: {
+        message: {
+          videoMessage: {
+            mimetype: 'video/mp4',
+            caption: 'Video rahasia V2'
+          }
+        }
+      }
+    });
+    assert.strictEqual(vo2.isViewOnce, true);
+    assert.strictEqual(vo2.mediaType, 'video');
+    assert.strictEqual(vo2.caption, 'Video rahasia V2');
+    assert.strictEqual(vo2.mimetype, 'video/mp4');
+
+    // 3. viewOnceMessageV2Extension
+    const vo3 = extractViewOnceMedia({
+      viewOnceMessageV2Extension: {
+        message: {
+          imageMessage: {
+            mimetype: 'image/png',
+            caption: 'Foto V2Extension'
+          }
+        }
+      }
+    });
+    assert.strictEqual(vo3.isViewOnce, true);
+    assert.strictEqual(vo3.mediaType, 'image');
+
+    // 4. Ephemeral Message membungkus viewOnceMessage
+    const vo4 = extractViewOnceMedia({
+      ephemeralMessage: {
+        message: {
+          viewOnceMessage: {
+            message: {
+              imageMessage: {
+                mimetype: 'image/jpeg',
+                caption: 'Ephemeral ViewOnce'
+              }
+            }
+          }
+        }
+      }
+    });
+    assert.strictEqual(vo4.isViewOnce, true);
+    assert.strictEqual(vo4.mediaType, 'image');
+
+    // 5. Direct viewOnce flag pada media object
+    const vo5 = extractViewOnceMedia({
+      imageMessage: {
+        mimetype: 'image/jpeg',
+        viewOnce: true,
+        caption: 'Direct Flag VO'
+      }
+    });
+    assert.strictEqual(vo5.isViewOnce, true);
+    assert.strictEqual(vo5.mediaType, 'image');
+
+    // 6. Non View Once (Normal Image & Video)
+    const nonVoImg = extractViewOnceMedia({
+      imageMessage: {
+        mimetype: 'image/jpeg',
+        caption: 'Normal Image'
+      }
+    });
+    assert.strictEqual(nonVoImg.isViewOnce, false);
+
+    const nonVoVid = extractViewOnceMedia({
+      videoMessage: {
+        mimetype: 'video/mp4',
+        caption: 'Normal Video'
+      }
+    });
+    assert.strictEqual(nonVoVid.isViewOnce, false);
+
+    // 7. Non media / null
+    assert.strictEqual(extractViewOnceMedia(null), null);
+    assert.strictEqual(extractViewOnceMedia({ conversation: 'Halo' }).isViewOnce, false);
   });
 
   console.log('\n====================================================');
