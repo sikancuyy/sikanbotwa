@@ -71,6 +71,61 @@ async function startBot() {
   // Simpan kredensial setiap ada update auth
   sock.ev.on('creds.update', saveCreds);
 
+  // Simpan pemetaan nomor WhatsApp <-> LID secara otomatis dari sinkronisasi kontak & history
+  sock.ev.on('contacts.upsert', (contacts) => {
+    try {
+      if (Array.isArray(contacts)) {
+        for (const c of contacts) {
+          if (c && c.lid && (c.id || c.jid)) {
+            const phone = c.jid || (c.id && !String(c.id).includes('@lid') ? c.id : null);
+            if (phone) {
+              const cleanPhone = normalizePhoneNumber(phone);
+              if (cleanPhone && isValidPhoneNumber(cleanPhone)) {
+                userDb.saveLidMapping(c.lid, cleanPhone);
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  });
+
+  sock.ev.on('contacts.update', (updates) => {
+    try {
+      if (Array.isArray(updates)) {
+        for (const c of updates) {
+          if (c && c.lid && (c.id || c.jid)) {
+            const phone = c.jid || (c.id && !String(c.id).includes('@lid') ? c.id : null);
+            if (phone) {
+              const cleanPhone = normalizePhoneNumber(phone);
+              if (cleanPhone && isValidPhoneNumber(cleanPhone)) {
+                userDb.saveLidMapping(c.lid, cleanPhone);
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  });
+
+  sock.ev.on('messaging-history.set', ({ contacts }) => {
+    try {
+      if (Array.isArray(contacts)) {
+        for (const c of contacts) {
+          if (c && c.lid && (c.id || c.jid)) {
+            const phone = c.jid || (c.id && !String(c.id).includes('@lid') ? c.id : null);
+            if (phone) {
+              const cleanPhone = normalizePhoneNumber(phone);
+              if (cleanPhone && isValidPhoneNumber(cleanPhone)) {
+                userDb.saveLidMapping(c.lid, cleanPhone);
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+  });
+
   // Pantau status koneksi
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;

@@ -171,40 +171,49 @@ function resolveLidToPhone(lid, sock = null, groupMetadata = null) {
 
   // 3. Cek di groupMetadata.participants jika diberikan
   if (groupMetadata && Array.isArray(groupMetadata.participants)) {
-    const found = groupMetadata.participants.find((p) => {
-      if (!p) return false;
-      const pLid = p.lid ? String(p.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+    for (const p of groupMetadata.participants) {
+      if (!p) continue;
+      const pLid = p.lid ? String(p.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : (p.id && String(p.id).includes('@lid') ? String(p.id).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '');
       const pId = p.id ? String(p.id).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
-      return (pLid && pLid === cleanLid) || (pId && pId === cleanLid);
-    });
-
-    if (found && found.id && !found.id.endsWith('@lid')) {
-      const candidate = normalizePhoneNumber(found.id);
-      if (candidate && isValidPhoneNumber(candidate)) {
-        saveMappingToDb(cleanLid, candidate);
-        debugResolver(`LID ${cleanLid} resolved via groupMetadata -> ${candidate}`);
-        return candidate;
+      if ((pLid && pLid === cleanLid) || (pId && pId === cleanLid)) {
+        const phoneCandidate = p.jid || p.phoneNumber || p.phone_number || (p.id && !String(p.id).includes('@lid') ? p.id : null);
+        if (phoneCandidate) {
+          const candidate = normalizePhoneNumber(phoneCandidate);
+          if (candidate && isValidPhoneNumber(candidate)) {
+            saveMappingToDb(cleanLid, candidate);
+            debugResolver(`LID ${cleanLid} resolved via groupMetadata -> ${candidate}`);
+            return candidate;
+          }
+        }
       }
     }
   }
 
   // 4. Cek di memory groupCache jika ada grup lain yang sudah menyimpan data participant
   try {
-    if (groupCacheRef && typeof groupCacheRef.values === 'function') {
-      for (const entry of groupCacheRef.values()) {
+    let groupCache = groupCacheRef;
+    if (!groupCache) {
+      const grp = require('./group');
+      groupCache = grp.groupCache;
+    }
+    if (groupCache && typeof groupCache.values === 'function') {
+      for (const entry of groupCache.values()) {
         const metadata = entry?.data || entry;
         if (metadata && Array.isArray(metadata.participants)) {
-          const match = metadata.participants.find((p) => {
-            if (!p) return false;
-            const pLid = p.lid ? String(p.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
-            return pLid && pLid === cleanLid;
-          });
-          if (match && match.id && !match.id.endsWith('@lid')) {
-            const candidate = normalizePhoneNumber(match.id);
-            if (candidate && isValidPhoneNumber(candidate)) {
-              saveMappingToDb(cleanLid, candidate);
-              debugResolver(`LID ${cleanLid} resolved via groupCache -> ${candidate}`);
-              return candidate;
+          for (const p of metadata.participants) {
+            if (!p) continue;
+            const pLid = p.lid ? String(p.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : (p.id && String(p.id).includes('@lid') ? String(p.id).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '');
+            const pId = p.id ? String(p.id).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+            if ((pLid && pLid === cleanLid) || (pId && pId === cleanLid)) {
+              const phoneCandidate = p.jid || p.phoneNumber || p.phone_number || (p.id && !String(p.id).includes('@lid') ? p.id : null);
+              if (phoneCandidate) {
+                const candidate = normalizePhoneNumber(phoneCandidate);
+                if (candidate && isValidPhoneNumber(candidate)) {
+                  saveMappingToDb(cleanLid, candidate);
+                  debugResolver(`LID ${cleanLid} resolved via groupCache -> ${candidate}`);
+                  return candidate;
+                }
+              }
             }
           }
         }
@@ -219,12 +228,16 @@ function resolveLidToPhone(lid, sock = null, groupMetadata = null) {
       if (contacts && typeof contacts === 'object') {
         for (const [jid, contact] of Object.entries(contacts)) {
           const cLid = contact.lid ? String(contact.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
-          if (cLid && cLid === cleanLid && jid.endsWith('@s.whatsapp.net')) {
-            const candidate = normalizePhoneNumber(jid);
-            if (candidate && isValidPhoneNumber(candidate)) {
-              saveMappingToDb(cleanLid, candidate);
-              debugResolver(`LID ${cleanLid} resolved via sock.contacts -> ${candidate}`);
-              return candidate;
+          const cId = contact.id ? String(contact.id).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+          if ((cLid && cLid === cleanLid) || (cId && cId === cleanLid)) {
+            const cand = contact.jid || (jid.endsWith('@s.whatsapp.net') ? jid : null);
+            if (cand) {
+              const candidate = normalizePhoneNumber(cand);
+              if (candidate && isValidPhoneNumber(candidate)) {
+                saveMappingToDb(cleanLid, candidate);
+                debugResolver(`LID ${cleanLid} resolved via sock.contacts -> ${candidate}`);
+                return candidate;
+              }
             }
           }
         }
@@ -301,6 +314,20 @@ function getRealPhoneNumber(message, sock = null, groupMetadata = null) {
 
     const chatId = key.remoteJid || '';
     const isGroup = chatId.endsWith('@g.us');
+
+    // 2.A: Periksa atribut Phone Number (PN) yang disediakan Baileys dari WhatsApp stanza
+    // WhatsApp mengirimkan sender_pn / participant_pn saat LID digunakan
+    const pnCandidate = key.senderPn || key.participantPn || key.remoteJidPn || message.senderPn || message.participantPn;
+    if (pnCandidate) {
+      const normPn = normalizePhoneNumber(pnCandidate);
+      if (normPn && isValidPhoneNumber(normPn)) {
+        const associatedLid = key.senderLid || key.participantLid || (chatId.includes('@lid') ? chatId : null) || (key.participant?.includes('@lid') ? key.participant : null);
+        if (associatedLid) {
+          saveMappingToDb(associatedLid, normPn);
+        }
+        return normPn;
+      }
+    }
 
     let candidate = null;
 
@@ -379,6 +406,17 @@ function getQuotedPhoneNumber(msg, sock = null, groupMetadata = null) {
     msg.message?.extendedTextMessage?.contextInfo ||
     msg.quoted?.contextInfo ||
     null;
+
+  // Cek PN langsung di contextInfo jika ada
+  if (contextInfo?.participantPn || contextInfo?.remoteJidPn) {
+    const norm = normalizePhoneNumber(contextInfo.participantPn || contextInfo.remoteJidPn);
+    if (norm && isValidPhoneNumber(norm)) {
+      if (contextInfo.participant && String(contextInfo.participant).includes('@lid')) {
+        saveMappingToDb(contextInfo.participant, norm);
+      }
+      return norm;
+    }
+  }
 
   let participant =
     contextInfo?.participant ||

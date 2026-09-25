@@ -11,7 +11,7 @@ const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextStic
 const { formatBytes, formatUptime, log, deleteFileSafe } = require('./utils');
 const { downloadVideo } = require('./downloader');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
-const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage } = require('./helpers/group');
+const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage, groupCache, getGroupMetadataSafe } = require('./helpers/group');
 const { generateTTS, convertToVoiceNote, cleanTempAudio } = require('./helpers/tts');
 const { generateQuoteChat, generateBratCustom, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const {
@@ -126,39 +126,6 @@ async function getMediaBuffer(mediaObj, type) {
   }
 }
 
-// In-memory cache untuk group metadata (TTL 5 menit) agar bot tidak freeze / terkena rate limit
-const groupCache = new Map();
-
-async function getGroupMetadataSafe(sock, chatId, forceRefresh = false) {
-  const cached = groupCache.get(chatId);
-  const now = Date.now();
-  if (!forceRefresh && cached && (now - cached.time < 5 * 60 * 1000)) {
-    return cached.data;
-  }
-  try {
-    const data = await Promise.race([
-      sock.groupMetadata(chatId),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Group metadata timeout (12s)')), 12000))
-    ]);
-    if (data) {
-      groupCache.set(chatId, { data, time: now });
-      if (Array.isArray(data.participants)) {
-        for (const p of data.participants) {
-          if (p.lid && p.id && !p.id.endsWith('@lid')) {
-            const cleanPhone = normalizePhoneNumber(p.id);
-            if (cleanPhone && isValidPhoneNumber(cleanPhone)) {
-              userDb.saveLidMapping(p.lid, cleanPhone);
-            }
-          }
-        }
-      }
-    }
-    return data;
-  } catch (err) {
-    console.error(`[WARN] Gagal mengambil groupMetadata (${chatId}):`, err.message);
-    return cached?.data || null;
-  }
-}
 
 /**
  * Helper resolusi perintah menu bertingkat yang toleran terhadap typo / singkatan
@@ -279,14 +246,24 @@ async function handleMessage(sock, msg, startTime) {
 
   // SATU-SATUNYA SUMBER NOMOR HP: getRealPhoneNumber
   let userNumber = getRealPhoneNumber(msg, sock, null);
-  if (!userNumber && isGroup && (String(msg.key?.participant).includes('@lid') || String(msg.participant).includes('@lid') || String(chatId).includes('@lid'))) {
-    const gm = await getGroupMetadataSafe(sock, chatId);
-    userNumber = getRealPhoneNumber(msg, sock, gm);
+  if (!userNumber && (String(msg.key?.participant).includes('@lid') || String(msg.participant).includes('@lid') || String(chatId).includes('@lid'))) {
+    if (isGroup) {
+      const gm = await getGroupMetadataSafe(sock, chatId);
+      userNumber = getRealPhoneNumber(msg, sock, gm);
+    }
+    // Jika masih belum terdeteksi (baik di DM maupun di grup), coba cari di seluruh groupCache
+    if (!userNumber) {
+      const lidCandidate = String(msg.key?.participant || msg.participant || chatId);
+      userNumber = resolveLidToPhone(lidCandidate, sock, null);
+    }
   }
 
   const senderNumber = userNumber; // Format standar '628xxxxxxxxxx' numerik murni atau null
   const botNumber = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
   const ownerNum = config.owner.number.replace(/[^0-9]/g, '');
+  const allOwnerNumbers = Array.isArray(config.owner.numbers)
+    ? config.owner.numbers.map((n) => n.replace(/[^0-9]/g, ''))
+    : [ownerNum];
 
   const sender = userNumber
     ? `${userNumber}@s.whatsapp.net`
@@ -296,7 +273,7 @@ async function handleMessage(sock, msg, startTime) {
 
   const pushName = msg.pushName || 'Kak';
   const isOwner = Boolean(msg.key.fromMe) ||
-    (senderNumber && senderNumber === ownerNum) ||
+    (senderNumber && allOwnerNumbers.includes(senderNumber)) ||
     (botNumber && senderNumber === botNumber) ||
     (senderNumber && db.isOwner(senderNumber)) ||
     (sender ? db.isOwner(sender) : false);
@@ -994,10 +971,17 @@ async function handleMessage(sock, msg, startTime) {
     const isUnlim = (limitCheck.isUnlimited) ? 'Yes' : 'No';
     const limitDisplay = limitCheck.isUnlimited ? 'Unlimited' : limitCheck.remaining;
 
+    // Pastikan nomor selalu terisi jika tersedia dari senderNumber, data user di database, atau LID mapping
+    const resolvedPhone = senderNumber || u?.phone || (sender.includes('@lid') ? userDb.getPhoneByLid(sender) : null);
+    if (!senderNumber && resolvedPhone && sender.includes('@lid')) {
+      userDb.saveLidMapping(sender, resolvedPhone);
+    }
+    const phoneDisplay = formatPhoneDisplay(resolvedPhone);
+
     const meText = `╭───〔 👤 MY PROFILE 〕
 │
 ├ Nama       : ${u?.name || pushName || 'User'}
-├ Nomor      : ${formatPhoneDisplay(senderNumber)}
+├ Nomor      : ${phoneDisplay}
 ├ Status     : ${isReg}
 ├ Role       : ${role}
 ├ Premium    : ${isPrem}
@@ -1047,31 +1031,53 @@ async function handleMessage(sock, msg, startTime) {
       targetPhone = incomingPhone || quotedPhone;
     }
 
-    if (!targetPhone || !isValidUserNumber(targetPhone)) {
-      return reply('❌ Gagal memproses pendaftaran: Nomor WhatsApp asli Anda tidak dapat dideteksi dari pesan masuk maupun reply chat. Pastikan privasi nomor Anda terlihat di WhatsApp atau balas pesan chat user yang valid.');
-    }
-
-    const targetJid = `${targetPhone}@s.whatsapp.net`;
-    const existingUser = userDb.getUser(targetJid);
-    if (existingUser && existingUser.registered === 1) {
-      if (isFromReply && targetPhone !== incomingPhone) {
-        return reply(`ℹ️ User dengan nomor ${formatPhoneDisplay(targetPhone)} sudah terdaftar sebagai User #${existingUser.id} (${existingUser.name}).`);
-      }
-      return reply(`ℹ️ Kamu sudah terdaftar sebagai User #${existingUser.id}.`);
-    }
-
     if (!q || !q.includes('-')) {
       return reply(
         `❌ Format pendaftaran salah.\n\n` +
         `Gunakan:\n` +
         `${config.prefix}daftar Nama User - Kota - Umur\n\n` +
+        `Atau jika nomor Anda tersembunyi (LID/Privasi WA):\n` +
+        `${config.prefix}daftar [Nomor WA] - Nama User - Kota - Umur\n\n` +
         `Contoh:\n` +
-        `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20\n\n` +
+        `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20\n` +
+        `${config.prefix}daftar 082267034994 - Rahmat Haikal - Lhokseumawe - 20\n\n` +
         `_Tips: Anda juga bisa me-reply chat user lain untuk mendaftarkannya._`
       );
     }
 
-    const parts = q.split('-').map((s) => s.trim());
+    let parts = q.split('-').map((s) => s.trim());
+
+    // Cek apakah ada nomor telepon yang dimasukkan manual di salah satu bagian
+    let manualPhone = null;
+    const phoneIdx = parts.findIndex((p) => {
+      const norm = normalizePhoneNumber(p);
+      return norm && isValidPhoneNumber(norm);
+    });
+
+    if (phoneIdx !== -1) {
+      manualPhone = normalizePhoneNumber(parts[phoneIdx]);
+      parts.splice(phoneIdx, 1);
+    }
+
+    // Jika ada nomor manual atau jika targetPhone belum terdeteksi otomatis, gunakan manualPhone
+    if (manualPhone) {
+      targetPhone = manualPhone;
+      // Jika pengirim berupa LID, tautkan LID dengan nomor ini secara permanen
+      const senderLid = String(msg.key?.participant || msg.participant || chatId);
+      if (senderLid.includes('@lid')) {
+        userDb.saveLidMapping(senderLid, targetPhone);
+      }
+    }
+
+    if (!targetPhone || !isValidUserNumber(targetPhone)) {
+      return reply(
+        `❌ Gagal memproses pendaftaran: Nomor WhatsApp asli Anda tidak dapat dideteksi dari pesan masuk maupun reply chat. Pastikan privasi nomor Anda terlihat di WhatsApp atau balas pesan chat user yang valid.\n\n` +
+        `💡 *Solusi:* Silakan daftar dengan menyertakan nomor HP Anda secara langsung:\n` +
+        `Contoh:\n` +
+        `${config.prefix}daftar 082267034994 - ${q}`
+      );
+    }
+
     if (parts.length < 3) {
       return reply(
         `❌ Format pendaftaran salah.\n\n` +
@@ -1094,6 +1100,21 @@ async function handleMessage(sock, msg, startTime) {
         `Contoh:\n` +
         `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20`
       );
+    }
+
+    const targetJid = `${targetPhone}@s.whatsapp.net`;
+    const existingUser = userDb.getUser(targetJid);
+    if (existingUser && existingUser.registered === 1) {
+      if (isFromReply && targetPhone !== incomingPhone) {
+        return reply(`ℹ️ User dengan nomor ${formatPhoneDisplay(targetPhone)} sudah terdaftar sebagai User #${existingUser.id} (${existingUser.name}).`);
+      }
+      return reply(`ℹ️ Kamu sudah terdaftar sebagai User #${existingUser.id}.`);
+    }
+
+    // Tautkan LID pengirim (jika ada) ke targetPhone
+    const senderLid = String(msg.key?.participant || msg.participant || chatId);
+    if (senderLid.includes('@lid')) {
+      userDb.saveLidMapping(senderLid, targetPhone);
     }
 
     const newUser = userDb.registerUserWithDetails(targetJid, {

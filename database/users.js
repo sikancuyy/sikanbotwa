@@ -211,6 +211,10 @@ function initTables() {
 
 function extractPhone(rawJid) {
   if (!rawJid) return '';
+  if (typeof rawJid === 'string' && rawJid.includes('@lid')) {
+    const fromLid = getPhoneByLid(rawJid);
+    if (fromLid) return fromLid;
+  }
   const normalized = normalizeUserNumber(rawJid);
   if (!normalized || !isValidUserNumber(normalized)) return '';
   return normalized;
@@ -222,8 +226,8 @@ function extractPhone(rawJid) {
 function saveLidMapping(lid, phone) {
   if (!lid || !phone) return;
   const cleanLid = String(lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-  const cleanPhone = extractPhone(phone);
-  if (!cleanLid || !cleanPhone) return;
+  const cleanPhone = extractPhone(phone) || String(phone).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  if (!cleanLid || !cleanPhone || !isValidUserNumber(cleanPhone)) return;
 
   try {
     const db = getDb();
@@ -247,6 +251,22 @@ function getPhoneByLid(lid) {
     const db = getDb();
     const row = db.prepare('SELECT phone FROM lid_mappings WHERE lid = ?').get(cleanLid);
     return row ? row.phone : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Cari LID WhatsApp berdasarkan nomor HP dari database
+ */
+function getLidByPhone(phone) {
+  if (!phone) return null;
+  const cleanPhone = extractPhone(phone) || String(phone).replace(/[^0-9]/g, '');
+  if (!cleanPhone) return null;
+  try {
+    const db = getDb();
+    const row = db.prepare('SELECT lid FROM lid_mappings WHERE phone = ? ORDER BY updated_at DESC LIMIT 1').get(cleanPhone);
+    return row ? row.lid : null;
   } catch (_) {
     return null;
   }
@@ -894,5 +914,6 @@ module.exports = {
   getUsersOverview,
   getUsersPage,
   saveLidMapping,
-  getPhoneByLid
+  getPhoneByLid,
+  getLidByPhone
 };

@@ -1361,6 +1361,96 @@ async function runAllTests() {
     assert.strictEqual(getRealPhoneNumber(msgPrivateLid), '6281399887766');
   });
 
+  // 60. Registrasi .daftar dengan nomor HP manual saat LID tidak dapat dideteksi otomatis
+  await itAsync('60. User dengan LID dapat mendaftar dengan menyertakan nomor HP manual dan nomor otomatis muncul di .me', async () => {
+    const sentMessages = [];
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_TEST_60_' + Date.now() } };
+      }
+    };
+
+    const lidTest = '555444333222111@lid';
+    // User baru belum terdaftar dan mengirim pendaftaran dengan nomor manual
+    const msgDaftar = {
+      key: {
+        remoteJid: lidTest,
+        fromMe: false
+      },
+      message: {
+        conversation: '.daftar 081299887766 - Rahmat Haikal Test - Lhokseumawe - 20'
+      }
+    };
+
+    await handleMessage(mockSock, msgDaftar);
+    const regReply = sentMessages.find((m) => m.content && m.content.text && m.content.text.includes('PENDAFTARAN BERHASIL'));
+    assert.strictEqual(Boolean(regReply), true, 'Pendaftaran harus berhasil');
+    assert.strictEqual(regReply.content.text.includes('+6281299887766'), true, 'Harus menampilkan nomor yang didaftarkan');
+
+    // Cek bahwa mapping LID disimpan di database
+    const mappedPhone = users.getPhoneByLid(lidTest);
+    assert.strictEqual(mappedPhone, '6281299887766');
+
+    // Cek bahwa command .me dari LID ini sekarang menampilkan nomor yang didaftarkan
+    const msgMe = {
+      key: {
+        remoteJid: lidTest,
+        fromMe: false
+      },
+      message: { conversation: '.me' }
+    };
+
+    await handleMessage(mockSock, msgMe);
+    const meReply = sentMessages.find((m) => m.content && m.content.text && m.content.text.includes('MY PROFILE') && m.content.text.includes('+6281299887766'));
+    assert.strictEqual(Boolean(meReply), true, 'Command .me harus menampilkan nomor valid yang sudah didaftarkan');
+  });
+
+  // 61. getRealPhoneNumber mendeteksi phone number dari key.senderPn / participantPn
+  it('61. getRealPhoneNumber mendeteksi phone number dari key.senderPn dan key.participantPn Baileys', () => {
+    const { getRealPhoneNumber } = require('../helpers/userHelper');
+
+    const msgWithSenderPn = {
+      key: {
+        remoteJid: '123456789012345@lid',
+        senderPn: '6281987654321@s.whatsapp.net',
+        fromMe: false
+      }
+    };
+
+    const detected = getRealPhoneNumber(msgWithSenderPn);
+    assert.strictEqual(detected, '6281987654321');
+
+    // Pemetaan LID harus tersimpan otomatis
+    const autoMapped = users.getPhoneByLid('123456789012345');
+    assert.strictEqual(autoMapped, '6281987654321');
+  });
+
+  // 62. getRealPhoneNumber mendeteksi nomor user dari shared groupCache
+  it('62. getRealPhoneNumber mendeteksi nomor user LID dari groupCache ketika metadata grup tersedia', () => {
+    const { getRealPhoneNumber, resolveLidToPhone } = require('../helpers/userHelper');
+    const { groupCache } = require('../helpers/group');
+
+    // Simpan metadata grup di groupCache
+    groupCache.set('1203639999999999@g.us', {
+      time: Date.now(),
+      data: {
+        id: '1203639999999999@g.us',
+        participants: [
+          {
+            id: '9988776655443322@lid',
+            jid: '6281234445556@s.whatsapp.net',
+            lid: '9988776655443322@lid'
+          }
+        ]
+      }
+    });
+
+    const resolved = resolveLidToPhone('9988776655443322@lid');
+    assert.strictEqual(resolved, '6281234445556');
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');

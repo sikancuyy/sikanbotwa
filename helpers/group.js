@@ -152,7 +152,60 @@ function formatKickMessage(userJid) {
   return `👢 @${num} telah dikeluarkan dari grup.`;
 }
 
+// In-memory cache untuk group metadata (TTL 5 menit)
+const groupCache = new Map();
+
+/**
+ * Mengambil metadata grup dengan aman disertai caching 5 menit dan auto-learning mapping LID -> Phone
+ * @param {object} sock Baileys socket instance
+ * @param {string} chatId ID grup WhatsApp (@g.us)
+ * @param {boolean} [forceRefresh=false]
+ * @returns {Promise<object|null>}
+ */
+async function getGroupMetadataSafe(sock, chatId, forceRefresh = false) {
+  if (!chatId || !chatId.endsWith('@g.us')) return null;
+  const cached = groupCache.get(chatId);
+  const now = Date.now();
+  if (!forceRefresh && cached && (now - cached.time < 5 * 60 * 1000)) {
+    return cached.data;
+  }
+  if (!sock || typeof sock.groupMetadata !== 'function') {
+    return cached?.data || null;
+  }
+  try {
+    const data = await Promise.race([
+      sock.groupMetadata(chatId),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Group metadata timeout (12s)')), 12000))
+    ]);
+    if (data) {
+      groupCache.set(chatId, { data, time: now });
+      if (Array.isArray(data.participants)) {
+        try {
+          const userDb = require('../database/users');
+          const { normalizePhoneNumber, isValidPhoneNumber } = require('./userHelper');
+          for (const p of data.participants) {
+            if (!p) continue;
+            const pLid = p.lid ? String(p.lid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : (p.id && String(p.id).includes('@lid') ? String(p.id).split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '');
+            const pId = p.jid || p.phoneNumber || p.phone_number || (p.id && !String(p.id).includes('@lid') ? p.id : '');
+            if (pLid && pId) {
+              const cleanPhone = normalizePhoneNumber(pId);
+              if (cleanPhone && isValidPhoneNumber(cleanPhone)) {
+                userDb.saveLidMapping(pLid, cleanPhone);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+    }
+    return data;
+  } catch (err) {
+    return cached?.data || null;
+  }
+}
+
 module.exports = {
+  groupCache,
+  getGroupMetadataSafe,
   getValidGroupParticipants,
   filterActiveMentions,
   isGroupAdmin,
