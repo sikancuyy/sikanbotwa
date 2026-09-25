@@ -42,7 +42,7 @@ const {
 // Daftar seluruh command valid bot
 const VALID_COMMANDS = new Set([
   // Bot Menu Utama & Submenu Kategori
-  'menu', 'help', 'start', 'inmenu', 'indownload', 'insearch', 'ingame',
+  'menu', 'help', 'start', 'in', 'ins', 'inmenu', 'indownload', 'insearch', 'ingame',
   'insticker', 'intts', 'inuser', 'intools', 'ingroup', 'inadmin', 'inai', 'ininfo', 'inlog',
 
   // Bot Menu & Info
@@ -53,7 +53,7 @@ const VALID_COMMANDS = new Set([
   'limit', 'ceklimit', 'me', 'daftar', 'register',
 
   // Admin DB & User Management & Logs
-  'users', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit',
+  'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit',
   'addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser',
   'logs', 'loguser', 'logcmd', 'logerror', 'logdownload', 'loggroup',
 
@@ -138,6 +138,110 @@ async function getGroupMetadataSafe(sock, chatId, forceRefresh = false) {
 }
 
 /**
+ * Helper resolusi perintah menu bertingkat yang toleran terhadap typo / singkatan
+ * (Contoh: .ins, .indown, .ingam, .insear, .in tools, .in, dll)
+ */
+function resolveTieredMenu(command, q = '') {
+  if (!command) return null;
+  // Lindungi perintah non-menu yang diawali 'in'
+  if (['infobot', 'infouser', 'infogc', 'instagram', 'instastory'].includes(command)) {
+    return null;
+  }
+
+  // Jika bukan diawali 'in' dan bukan 'ins'
+  if (!command.startsWith('in')) {
+    return null;
+  }
+
+  // Khusus 'ins' yang tertera di menu: langsung ke insticker
+  if (command === 'ins') {
+    return 'insticker';
+  }
+
+  // Jika persis 'in' dan ada parameter q, periksa kata pertama q
+  let target = '';
+  if (command === 'in') {
+    target = (q || '').trim().toLowerCase().split(/\s+/)[0] || '';
+  } else {
+    // Ambil string setelah prefix 'in'
+    target = command.slice(2).toLowerCase();
+  }
+
+  if (!target) {
+    return 'inmenu';
+  }
+
+  // 1. Sticker (.ins, .insticker, .instik, .instk, .instiker, .instick, .in sticker)
+  if (target === 's' || /^(stik|stick|stk)/.test(target)) {
+    return 'insticker';
+  }
+
+  // 2. Download (.indownload, .indown, .indl, .inunduh, .in download)
+  if (/^(down|dl|unduh)/.test(target)) {
+    return 'indownload';
+  }
+
+  // 3. Search (.insearch, .insear, .incari, .insrch, .in search)
+  if (/^(sear|cari|srch)/.test(target)) {
+    return 'insearch';
+  }
+
+  // 4. Game (.ingame, .ingam, .ingm, .inpermainan, .in game)
+  if (/^(gam|gem|permainan)/.test(target)) {
+    return 'ingame';
+  }
+
+  // 5. TTS (.intts, .invoice, .insuara, .intt, .in tts)
+  if (/^(tts|voice|suara)/.test(target)) {
+    return 'intts';
+  }
+
+  // 6. User (.inuser, .inusr, .inprofil, .inakun, .in user)
+  if (/^(us|profil|akun)/.test(target)) {
+    return 'inuser';
+  }
+
+  // 7. Tools (.intools, .intool, .intul, .inalat, .in tools)
+  if (/^(tool|tul|alat)/.test(target)) {
+    return 'intools';
+  }
+
+  // 8. Group (.ingroup, .ingrup, .ingrp, .ingc, .in group)
+  if (/^(group|grup|grp|gc)/.test(target)) {
+    return 'ingroup';
+  }
+
+  // 9. Admin (.inadmin, .inadmn, .inadm, .inowner, .in admin)
+  if (/^(ad|owner|own)/.test(target)) {
+    return 'inadmin';
+  }
+
+  // 10. AI (.inai, .ingpt, .inopenai, .in ai)
+  if (/^(ai|gpt|openai|botai)/.test(target)) {
+    return 'inai';
+  }
+
+  // 11. Info (.ininfo, .ininf, .ininformasi, .in info)
+  if (/^(inf)/.test(target)) {
+    return 'ininfo';
+  }
+
+  // 12. Log (.inlog, .inlogs, .inmonitoring, .in log)
+  if (/^(log|monitoring)/.test(target)) {
+    return 'inlog';
+  }
+
+  // 13. General / Menu (.inmenu, .inmen, .inmain, .inhelp, .in menu)
+  if (/^(menu|main|help|awal)/.test(target)) {
+    return 'inmenu';
+  }
+
+  // Fallback: Jika user mengetikkan perintah diawali 'in' apapun (misal .inxyz),
+  // tetap arahkan masuk ke halaman menu bertingkat agar tidak gagal
+  return 'inmenu';
+}
+
+/**
  * Handler utama pesan WhatsApp
  */
 async function handleMessage(sock, msg, startTime) {
@@ -157,7 +261,7 @@ async function handleMessage(sock, msg, startTime) {
   const senderNumber = normSender.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
   const sender = normSender.includes('@') ? normSender : (senderNumber ? `${senderNumber}@s.whatsapp.net` : rawSender);
   const pushName = msg.pushName || 'Kak';
-  const isOwner = Boolean(msg.key.fromMe) || db.isOwner(sender) || (botNumber && senderNumber === botNumber);
+  const isOwner = Boolean(msg.key.fromMe) || db.isOwner(sender) || db.isOwner(senderNumber) || (botNumber && senderNumber === botNumber) || (senderNumber === config.owner.number.replace(/[^0-9]/g, ''));
   const isPrem = isOwner || db.isPremium(sender);
   const isBanned = isOwner ? false : db.isBanned(sender);
 
@@ -645,6 +749,8 @@ async function handleMessage(sock, msg, startTime) {
     'deladmin': 'deladmin',
     'hapusadmin': 'deladmin',
     'listadmin': 'listadmin',
+    'listuser': 'listuser',
+    'listusers': 'listuser',
     'daftaruser': 'daftaruser',
     'reguser': 'daftaruser',
     'deluser': 'deluser',
@@ -666,11 +772,17 @@ async function handleMessage(sock, msg, startTime) {
     // AI
     'sum': 'summarize',
     'ringkas': 'summarize',
-    // Bot
+    // Bot & Submenu
     'info': 'infobot',
     'start': 'menu',
     'donasi': 'donate'
   };
+
+  // Toleransi perintah menu bertingkat yang kurang akurat / typo (misal: .ins, .indown, .ingam, .insear, .in tools, .in download, dll)
+  const resolvedTiered = resolveTieredMenu(command, q);
+  if (resolvedTiered) {
+    command = resolvedTiered;
+  }
 
   if (aliases[command]) {
     command = aliases[command];
@@ -717,8 +829,10 @@ async function handleMessage(sock, msg, startTime) {
    * ==================================================================== */
   if (command === 'menu' || command === 'help' || command === 'start') {
     commandExecutedSuccessfully = true;
-    const greeting = isGroup ? `@${senderNumber}` : (pushName || 'Kak');
-    const banner = getMainCategoryMenu(greeting);
+    const dbUser = userDb.getUser(sender);
+    const isRegistered = Boolean(dbUser && dbUser.registered === 1);
+    const greeting = isGroup ? `@${senderNumber}` : ((dbUser && dbUser.name) ? dbUser.name : (pushName || 'Kak'));
+    const banner = getMainCategoryMenu(greeting, isRegistered);
     return await reply(banner, { mentions: [sender] });
   }
 
@@ -870,22 +984,58 @@ async function handleMessage(sock, msg, startTime) {
   if (command === 'daftar' || command === 'register') {
     const existingUser = userDb.getUser(sender);
     if (existingUser && existingUser.registered === 1) {
-      return reply('Anda sudah terdaftar sebagai pengguna unlimited.');
+      return reply(`ℹ️ Kamu sudah terdaftar sebagai User #${existingUser.id}.`);
     }
 
-    if (q) {
-      userDb.registerUser(sender, q);
-      commandExecutedSuccessfully = true;
+    if (!q || !q.includes('-')) {
       return reply(
-        `Registrasi berhasil.\n\n` +
-        `Nama: ${q}\n` +
-        `Status: UNLIMITED\n\n` +
-        `Sekarang kamu dapat menggunakan fitur bot tanpa batas.`
+        `❌ Format pendaftaran salah.\n\n` +
+        `Gunakan:\n` +
+        `${config.prefix}daftar Nama User - Kota - Umur\n\n` +
+        `Contoh:\n` +
+        `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20`
       );
     }
 
-    registrationSessions.set(sender, true);
-    return reply('Silakan balas dengan nama lengkap kamu.');
+    const parts = q.split('-').map((s) => s.trim());
+    if (parts.length < 3) {
+      return reply(
+        `❌ Format pendaftaran salah.\n\n` +
+        `Gunakan:\n` +
+        `${config.prefix}daftar Nama User - Kota - Umur\n\n` +
+        `Contoh:\n` +
+        `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20`
+      );
+    }
+
+    const regName = parts[0];
+    const regKota = parts[1];
+    const regUmur = parseInt(parts[2], 10);
+
+    if (!regName || !regKota || isNaN(regUmur) || regUmur <= 0) {
+      return reply(
+        `❌ Format pendaftaran salah.\n\n` +
+        `Gunakan:\n` +
+        `${config.prefix}daftar Nama User - Kota - Umur\n\n` +
+        `Contoh:\n` +
+        `${config.prefix}daftar Rahmat Haikal - Lhokseumawe - 20`
+      );
+    }
+
+    const newUser = userDb.registerUserWithDetails(sender, {
+      name: regName,
+      kota: regKota,
+      umur: regUmur
+    });
+
+    commandExecutedSuccessfully = true;
+    return reply(
+      `✅ *PENDAFTARAN BERHASIL*\n\n` +
+      `🆔 ID    : ${newUser.id}\n` +
+      `👤 Nama  : ${newUser.name}\n` +
+      `📍 Kota  : ${newUser.kota}\n` +
+      `🎂 Umur  : ${newUser.umur}`
+    );
   }
 
   if (command === 'owner') {
@@ -897,7 +1047,8 @@ async function handleMessage(sock, msg, startTime) {
 │ 🤖 Bot    : ${config.botName}
 │ 🎓 Kampus : ${config.owner.campus}
 │
-│ 📱 WhatsApp : [${config.owner.phone}]
+│ 📱 Owner WA : +${config.owner.number.replace(/[^0-9]/g, '')}
+│ 📞 Kontak WA: ${config.owner.phone}
 │ 📷 Instagram: [${config.owner.instagram}]
 │ 💻 GitHub   : [${config.owner.github}]
 │
@@ -915,7 +1066,8 @@ async function handleMessage(sock, msg, startTime) {
 ├ Kampus    : ${config.owner.campus}
 ├ Jurusan   : ${config.owner.major}
 │
-├ WhatsApp  : [${config.owner.phone}]
+├ Owner WA  : +${config.owner.number.replace(/[^0-9]/g, '')}
+├ Kontak WA : ${config.owner.phone}
 ├ Instagram : [${config.owner.instagram}]
 ├ Email     : [${config.owner.email}]
 │
@@ -2461,7 +2613,7 @@ async function handleMessage(sock, msg, startTime) {
   /* ====================================================================
    * 8.1. 🗄️ ADMIN USER DATABASE & MANAGEMENT
    * ==================================================================== */
-  if (['addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'users', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit'].includes(command)) {
+  if (['addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit'].includes(command)) {
     const isBotAdminUser = isOwner || userDb.isBotAdmin(sender);
 
     // addadmin & deladmin khusus Owner
@@ -2524,15 +2676,69 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     if (command === 'deluser') {
-      const target = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!target) return reply(`Masukkan nomor pengguna yang ingin dihapus!\nContoh: *${config.prefix}deluser 62822xxx*`);
-      const ok = userDb.deleteUser(target);
+      const target = (args[0] || '').trim();
+      if (!target) return reply(`Masukkan ID user yang ingin dihapus!\nContoh: *${config.prefix}deluser 5*`);
+      const targetId = parseInt(target, 10);
+      let ok = false;
+      if (!isNaN(targetId) && targetId < 100000) {
+        ok = userDb.deleteUserById(targetId);
+      } else {
+        ok = userDb.deleteUser(target);
+      }
+
       if (ok) {
         commandExecutedSuccessfully = true;
-        return reply(`🗑️ Data pengguna +${target} berhasil dihapus dari database.`);
+        return reply(`🗑️ Data user #${target} berhasil dihapus dari database.`);
       } else {
-        return reply('❌ Pengguna tidak ditemukan di database.');
+        return reply(`❌ User dengan ID ${target} tidak ditemukan.`);
       }
+    }
+
+    if (command === 'listuser') {
+      const usersList = userDb.getAllRegisteredUsers();
+      if (!usersList || usersList.length === 0) {
+        return reply(`👥 *DAFTAR USER*\n\n_Belum ada user yang terdaftar._\n\nTotal User: 0`);
+      }
+      let txt = `👥 *DAFTAR USER*\n\n`;
+      usersList.forEach((u) => {
+        const paddedId = String(u.id).padStart(2, '0');
+        txt += `${paddedId}. ${u.name}\n`;
+      });
+      txt += `\nTotal User: ${usersList.length}`;
+      commandExecutedSuccessfully = true;
+      return reply(txt);
+    }
+
+    if (command === 'infouser') {
+      const targetId = parseInt(args[0], 10);
+      if (isNaN(targetId)) {
+        return reply(`Masukkan ID user!\nContoh: *${config.prefix}infouser 1*`);
+      }
+      const u = userDb.getUserById(targetId);
+      if (!u) {
+        return reply(`❌ User dengan ID ${targetId} tidak ditemukan.`);
+      }
+
+      const registeredDate = userDb.formatIndonesianDate(u.registered_at || u.created_at);
+      const isUnlim = (u.unlimited === 1 || u.limit_type === 'unlimited');
+      const limitVal = isUnlim ? 50 : (u.limit_val || 50);
+      const usage = (u.usage_count || 0);
+      const remainingLimit = isUnlim ? Math.max(0, limitVal - usage) : Math.max(0, limitVal - usage);
+
+      const card = `👤 *INFORMASI USER*\n\n` +
+        `🆔 ID          : ${u.id}\n` +
+        `👤 Nama        : ${u.name}\n` +
+        `📍 Kota        : ${u.kota || '-'}\n` +
+        `🎂 Umur        : ${u.umur || '-'}\n` +
+        `📱 Nomor       : ${u.phone}\n` +
+        `📅 Terdaftar   : ${registeredDate}\n` +
+        `🟢 Status      : ${u.status || 'Aktif'}\n` +
+        `📊 Limit       : ${limitVal}\n` +
+        `📥 Digunakan   : ${usage}\n` +
+        `📈 Sisa Limit  : ${remainingLimit}`;
+
+      commandExecutedSuccessfully = true;
+      return reply(card);
     }
 
     if (command === 'users') {
@@ -2548,9 +2754,11 @@ async function handleMessage(sock, msg, startTime) {
         let txt = `╭───〔 👥 DAFTAR USER (Hal ${data.page}/${data.totalPages}) 〕\n│\n`;
         data.users.forEach((u, i) => {
           const num = ((data.page - 1) * data.pageSize) + (i + 1);
-          txt += `├ ${num}. ${u.name || 'User'} (+${u.phone}) [${u.limit_type.toUpperCase()}]\n`;
+          const roleBadge = u.role === 'owner' ? ' [OWNER]' : (u.role === 'admin' ? ' [ADMIN]' : (u.premium ? ' [PREMIUM]' : ''));
+          const limText = (u.unlimited || u.limit_type === 'unlimited') ? 'UNLIMITED' : `LIMIT: ${u.limit ?? 50}`;
+          txt += `├ ${num}. ${u.name || 'User'} (+${u.phone})${roleBadge}\n│  └ Status: ${limText} | Cmd: ${u.total_commands || 0}\n`;
         });
-        txt += `╰────────────────\nKetik *${config.prefix}users ${data.page + 1}* untuk halaman berikutnya.`;
+        txt += `╰────────────────\n• Total User: ${data.total}\n• Ketik *${config.prefix}listuser ${data.page + 1}* untuk halaman berikutnya.`;
         commandExecutedSuccessfully = true;
         return reply(txt);
       }
@@ -2565,7 +2773,7 @@ async function handleMessage(sock, msg, startTime) {
 ├ Banned       : ${ov.banned.toLocaleString('id-ID')}
 ├ Active Today : ${ov.activeToday.toLocaleString('id-ID')}
 ╰────────────────
-Gunakan *${config.prefix}users list* untuk melihat daftar pengguna.`;
+Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melihat daftar pengguna.`;
 
       commandExecutedSuccessfully = true;
       return reply(summaryText);

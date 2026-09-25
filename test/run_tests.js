@@ -8,6 +8,7 @@ console.log('====================================================\n');
 
 let passCount = 0;
 let failCount = 0;
+const failedTests = [];
 
 function it(name, fn) {
   try {
@@ -17,6 +18,7 @@ function it(name, fn) {
   } catch (err) {
     console.error(`❌ [FAIL] ${name}`);
     console.error(`   Error: ${err.message}\n`);
+    failedTests.push({ name, error: err.message });
     failCount++;
   }
 }
@@ -29,6 +31,7 @@ async function itAsync(name, fn) {
   } catch (err) {
     console.error(`❌ [FAIL] ${name}`);
     console.error(`   Error: ${err.message}\n`);
+    failedTests.push({ name, error: err.message });
     failCount++;
   }
 }
@@ -531,7 +534,7 @@ async function runAllTests() {
     assert.strictEqual(textReply.text.includes('.inmenu'), true);
     assert.strictEqual(textReply.text.includes('.indownload'), true);
     assert.strictEqual(textReply.text.includes('.ingame'), true);
-    assert.strictEqual(textReply.text.includes('.insticker'), true);
+    assert.strictEqual(textReply.text.includes('.ins'), true);
     assert.strictEqual(textReply.text.includes('.intts'), true);
     assert.strictEqual(textReply.text.includes('.inuser'), true);
     assert.strictEqual(textReply.text.includes('.intools'), true);
@@ -692,9 +695,246 @@ async function runAllTests() {
     assert.strictEqual(Boolean(replyObj), true, 'User biasa harus ditolak saat mengakses .logs');
   });
 
+  // 36. Perintah .listuser menampilkan daftar user dengan format '01. Nama'
+  await itAsync('36. Perintah .listuser menampilkan daftar user dengan format numerik urut ID', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: content.react ? content.react.key : { id: 'LISTUSER_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    // Dipanggil oleh Owner
+    const mockMsg = {
+      key: { remoteJid: '6282267034994@s.whatsapp.net', id: 'CMD_LISTUSER', fromMe: false },
+      message: { conversation: '.listuser' }
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('DAFTAR USER'));
+    assert.strictEqual(Boolean(replyObj), true, '.listuser harus mengembalikan kartu daftar user');
+    assert.strictEqual(replyObj.text.includes('Total User:'), true);
+    assert.strictEqual(replyObj.text.includes('01.'), true);
+  });
+
+  // 37. Validasi akses Owner 6282267034994
+  it('37. Owner 6282267034994 dikenali dengan hak akses penuh (Owner/Unlimited)', () => {
+    const db = require('../lib/database');
+    assert.strictEqual(db.isOwner('6282267034994@s.whatsapp.net'), true);
+    assert.strictEqual(db.isOwner('6282267034994:1@s.whatsapp.net'), true);
+    assert.strictEqual(db.isOwner('6282267034994'), true);
+    const ownerData = users.getUser('6282267034994@s.whatsapp.net');
+    assert.strictEqual(ownerData.role, 'owner');
+    assert.strictEqual(ownerData.limit_type, 'unlimited');
+  });
+
+  // 38. Fitur .daftar Nama - Kota - Umur
+  await itAsync('38. Pendaftaran .daftar Nama User - Kota - Umur berhasil & menyimpan data lengkap', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: { id: 'REG_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    const mockMsg = {
+      key: { remoteJid: '6281234560001@s.whatsapp.net', id: 'CMD_REG', fromMe: false },
+      message: { conversation: '.daftar Ahmad Fauzi - Banda Aceh - 22' }
+    };
+
+    // Bersihkan dulu jika ada
+    users.deleteUser('6281234560001');
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('PENDAFTARAN BERHASIL'));
+    assert.strictEqual(Boolean(replyObj), true, 'Pendaftaran harus berhasil');
+    assert.strictEqual(replyObj.text.includes('Ahmad Fauzi'), true);
+    assert.strictEqual(replyObj.text.includes('Banda Aceh'), true);
+    assert.strictEqual(replyObj.text.includes('22'), true);
+
+    const saved = users.getUser('6281234560001');
+    assert.strictEqual(saved.registered, 1);
+    assert.strictEqual(saved.kota, 'Banda Aceh');
+    assert.strictEqual(saved.umur, 22);
+  });
+
+  // 39. Cegah pendaftaran ganda (duplicate .daftar)
+  await itAsync('39. Percobaan .daftar ulang menampilkan pesan sudah terdaftar beserta ID', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: { id: 'REG_DUP_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    const mockMsg = {
+      key: { remoteJid: '6281234560001@s.whatsapp.net', id: 'CMD_REG_DUP', fromMe: false },
+      message: { conversation: '.daftar Ahmad Fauzi - Banda Aceh - 22' }
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('Kamu sudah terdaftar sebagai User #'));
+    assert.strictEqual(Boolean(replyObj), true, 'Harus menolak pendaftaran ganda');
+  });
+
+  // 40. Konsep Smallest Available ID & Penghapusan user (.deluser)
+  await itAsync('40. Smallest Available ID: ID kosong terkecil digunakan kembali setelah user dihapus', async () => {
+    // Daftarkan user A dan user B
+    users.deleteUser('6281234560002');
+    users.deleteUser('6281234560003');
+
+    const uA = users.registerUserWithDetails('6281234560002', { name: 'User A', kota: 'Medan', umur: 21 });
+    const uB = users.registerUserWithDetails('6281234560003', { name: 'User B', kota: 'Jakarta', umur: 25 });
+
+    assert.strictEqual(uB.id > uA.id, true);
+
+    // Hapus User A
+    const delOk = users.deleteUserById(uA.id);
+    assert.strictEqual(delOk, true);
+
+    // User C mendaftar, harus mendapatkan ID kosong terkecil yaitu uA.id!
+    users.deleteUser('6281234560004');
+    const uC = users.registerUserWithDetails('6281234560004', { name: 'User C', kota: 'Surabaya', umur: 23 });
+    assert.strictEqual(uC.id, uA.id, 'User baru harus mengisi ID kosong terkecil yang baru saja dihapus');
+
+    // Bersihkan
+    users.deleteUserById(uB.id);
+    users.deleteUserById(uC.id);
+  });
+
+  // 41. Menu dinamis: Menampilkan .daftar jika belum terdaftar dan menyembunyikannya jika sudah terdaftar
+  await itAsync('41. Menu dinamis: Menampilkan petunjuk .daftar untuk guest dan menyembunyikannya untuk user terdaftar', async () => {
+    const { getMainCategoryMenu } = require('../helpers/menus');
+    const unregisteredMenu = getMainCategoryMenu('Tamu', false);
+    assert.strictEqual(unregisteredMenu.includes('⚠️ Kamu belum terdaftar.'), true);
+    assert.strictEqual(unregisteredMenu.includes('.daftar Nama User - Kota - Umur'), true);
+
+    const registeredMenu = getMainCategoryMenu('Rahmat Haikal', true);
+    assert.strictEqual(registeredMenu.includes('⚠️ Kamu belum terdaftar.'), false);
+    assert.strictEqual(registeredMenu.includes('.daftar Nama User - Kota - Umur'), false);
+  });
+
+  // 42. Admin .infouser <ID> menampilkan profil user terdaftar
+  await itAsync('42. Admin .infouser <ID> menampilkan detail data user terdaftar', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: { id: 'INFOUSER_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    // Owner mengakses .infouser 1
+    const mockMsg = {
+      key: { remoteJid: '6282267034994@s.whatsapp.net', id: 'CMD_INFOUSER', fromMe: false },
+      message: { conversation: '.infouser 1' }
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('INFORMASI USER'));
+    assert.strictEqual(Boolean(replyObj), true);
+    assert.strictEqual(replyObj.text.includes('🆔 ID          : 1'), true);
+    assert.strictEqual(replyObj.text.includes('📍 Kota'), true);
+    assert.strictEqual(replyObj.text.includes('🎂 Umur'), true);
+  });
+
+  // 43. Perintah .ins langsung membuka submenu stiker
+  await itAsync('43. Perintah .ins langsung membuka submenu stiker (getStickerMenu)', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: content.react ? content.react.key : { id: 'INS_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    const mockMsg = {
+      key: { remoteJid: '6287777777777@s.whatsapp.net', id: 'CMD_INS', fromMe: false },
+      message: { conversation: '.ins' }
+    };
+
+    await handleMessage(mockSock, mockMsg, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('STICKER & MEDIA'));
+    assert.strictEqual(Boolean(replyObj), true);
+    assert.strictEqual(replyObj.text.includes('.brat'), true);
+    assert.strictEqual(replyObj.text.includes('.qc'), true);
+  });
+
+  // 44. Perintah 'in' kurang akurat / typo tetap masuk ke halaman bertingkat yang tepat
+  await itAsync('44. Perintah menu bertingkat yang kurang akurat/typo (indown, ingam, insear, intul, ingrup, inadm, in download, in) tetap masuk', async () => {
+    const testCases = [
+      { input: '.indown', expectedHeader: 'DOWNLOAD' },
+      { input: '.indl', expectedHeader: 'DOWNLOAD' },
+      { input: '.in download', expectedHeader: 'DOWNLOAD' },
+      { input: '.ingam', expectedHeader: 'GAME & FUN' },
+      { input: '.insear', expectedHeader: 'SEARCH' },
+      { input: '.intul', expectedHeader: 'TOOLS' },
+      { input: '.ingrup', expectedHeader: 'GROUP' },
+      { input: '.inadm', expectedHeader: 'ADMIN' },
+      { input: '.in', expectedHeader: 'GENERAL' },
+      { input: '.inrandomtypo', expectedHeader: 'GENERAL' }
+    ];
+
+    for (const tc of testCases) {
+      const replies = [];
+      const mockSock = {
+        sendMessage: async (chat, content) => {
+          replies.push(content);
+          return { key: content.react ? content.react.key : { id: 'FUZZY_RES' } };
+        },
+        sendPresenceUpdate: async () => {},
+        user: { id: '6281111111111:1@s.whatsapp.net' }
+      };
+      const mockMsg = {
+        key: { remoteJid: '6287777777777@s.whatsapp.net', id: `CMD_FUZZY_${tc.input}`, fromMe: false },
+        message: { conversation: tc.input }
+      };
+
+      await handleMessage(mockSock, mockMsg, Date.now());
+      const replyObj = replies.find((r) => r.text && r.text.includes(tc.expectedHeader));
+      assert.strictEqual(Boolean(replyObj), true, `Input "${tc.input}" harus menampilkan header "${tc.expectedHeader}"`);
+    }
+  });
+
+  // 45. Command non-menu diawali 'in' (seperti .infobot, .infouser) dan command stiker (.s) tidak terganggu
+  await itAsync('45. Command non-menu (.infobot, .infouser) dan stiker (.s) tidak tertukar oleh fuzzy router', async () => {
+    // 1. .infobot tetap berfungsi sebagai info bot
+    const repliesBot = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        repliesBot.push(content);
+        return { key: content.react ? content.react.key : { id: 'INFOBOT_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+    const mockMsgBot = {
+      key: { remoteJid: '6287777777777@s.whatsapp.net', id: 'CMD_INFOBOT', fromMe: false },
+      message: { conversation: '.infobot' }
+    };
+    await handleMessage(mockSock, mockMsgBot, Date.now());
+    const replyBot = repliesBot.find((r) => r.text && r.text.includes('INFORMASI BOT'));
+    assert.strictEqual(Boolean(replyBot), true);
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');
+
+  if (failedTests.length > 0) {
+    console.log('\n❌ DAFTAR TEST GAGAL:');
+    failedTests.forEach((f, i) => {
+      console.log(`${i + 1}. ${f.name} => ${f.error}`);
+    });
+  }
 
   if (failCount > 0) {
     process.exit(1);

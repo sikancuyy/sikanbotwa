@@ -3,33 +3,34 @@ const config = require('../config');
 /**
  * Menu Utama Bertingkat SikanBot
  */
-function getMainCategoryMenu(pushName = 'Kak') {
+function getMainCategoryMenu(pushName = 'Kak', isRegistered = false) {
   const p = config.prefix;
+  const unregNote = isRegistered ? '' : `\n\n⚠️ Kamu belum terdaftar.\nKetik: \`${p}daftar Nama User - Kota - Umur\``;
+
   return `╭───〔 🤖 SIKANBOT 〕
 │
-│ 👋 Halo @user!
+│ 👋 Halo ${pushName}!
 │ Selamat datang di ${config.botName}.
-│
 │ Prefix : \`${p}\`
 │
 ╰────────────────
 
 ╭───〔 📚 MENU 〕
 │
-├ ${p}inmenu
-├ ${p}indownload
-├ ${p}insearch
-├ ${p}ingame
-├ ${p}insticker
-├ ${p}intts
-├ ${p}inuser
-├ ${p}intools
-├ ${p}ingroup
-├ ${p}inadmin
-├ ${p}inai
-├ ${p}ininfo
-├ ${p}inlog
-╰────────────────`.replace('@user', pushName);
+├ ${p}inmenu     → 📚 Menu utama
+├ ${p}indownload → ⬇️ Download
+├ ${p}insearch   → 🔎 Pencarian
+├ ${p}ingame     → 🎮 Game
+├ ${p}ins→ 🖼️ Sticker
+├ ${p}intts      → 🔊 Text To Speech
+├ ${p}inuser     → 👤 Data user
+├ ${p}intools    → 🛠️ Tools
+├ ${p}ingroup    → 👥 Fitur grup
+├ ${p}inadmin    → 👑 Admin grup
+├ ${p}inai       → 🤖 Artificial Intelligence
+├ ${p}ininfo     → ℹ️ Info bot
+├ ${p}inlog      → 📋 Log aktivitas
+╰────────────────${unregNote}`;
 }
 
 function getGeneralMenu() {
@@ -209,9 +210,10 @@ function getAdminMenu() {
 ├ ${p}deladmin <nomor>
 ├ ${p}listadmin
 ├ ${p}daftaruser <nomor>|<nama>
-├ ${p}deluser <nomor>
+├ ${p}deluser <ID>
 ├ ${p}users
-├ ${p}userinfo <nomor>
+├ ${p}listuser
+├ ${p}infouser <ID>
 ├ ${p}resetlimit <nomor>
 ├ ${p}setunlimited <nomor>
 ├ ${p}setlimit <nomor>
