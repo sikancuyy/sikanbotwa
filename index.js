@@ -137,7 +137,7 @@ async function startBot() {
       const groupName = groupMetadata ? groupMetadata.subject : 'Grup';
 
       for (const participant of participants) {
-        const userNum = participant.split('@')[0];
+        const userNum = participant.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 
         if (action === 'add') {
           const welcomeText = `👋 *SELAMAT DATANG DI ${groupName.toUpperCase()}!*\n\n` +
@@ -145,15 +145,20 @@ async function startBot() {
             `Silakan patuhi peraturan grup dan perkenalkan diri Anda.\n\n` +
             `_Ketik *.menu* untuk melihat fitur SikanBot._`;
 
+          // Hanya mention jika participant valid
+          const activeMentions = groupMetadata?.participants?.some((p) => p.id?.includes(userNum))
+            ? [participant]
+            : [];
+
           await sock.sendMessage(id, {
             text: welcomeText,
-            mentions: [participant]
+            mentions: activeMentions
           });
         } else if (action === 'remove') {
+          // KHUSUS EVENT LEAVE/KICK: Jangan masukkan nomor ke mentionedJid karena user sudah bukan participant aktif!
           const leaveText = `👋 Selamat tinggal @${userNum}.\nSemoga harimu menyenangkan di luar grup ini!`;
           await sock.sendMessage(id, {
-            text: leaveText,
-            mentions: [participant]
+            text: leaveText
           });
         }
       }

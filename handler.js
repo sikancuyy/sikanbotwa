@@ -4,11 +4,77 @@ const axios = require('axios');
 const { downloadContentFromMessage, jidNormalizedUser, areJidsSameUser } = require('@whiskeysockets/baileys');
 const config = require('./config');
 const db = require('./lib/database');
+const userDb = require('./database/users');
 const games = require('./lib/games');
 const scraper = require('./lib/scraper');
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe } = require('./utils');
 const { downloadVideo } = require('./downloader');
+const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
+const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage } = require('./helpers/group');
+const { generateTTS, cleanTempAudio } = require('./helpers/tts');
+const { generateQuoteChat, generateBratCustom, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
+const {
+  startProcessing,
+  stopProcessing,
+  startTyping,
+  stopTyping,
+  setReaction,
+  setProcessingReaction
+} = require('./helpers/processingStatus');
+
+// Daftar seluruh command valid bot
+const VALID_COMMANDS = new Set([
+  // Bot Menu & Info
+  'menu', 'help', 'start', 'ping', 'alive', 'uptime', 'runtime', 'bot', 'infobot',
+  'owner', 'script', 'donate', 'groups', 'blocklist',
+
+  // User & Limit & Database
+  'limit', 'ceklimit', 'me', 'daftar', 'register',
+
+  // Admin DB & User Management
+  'users', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit',
+  'addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser',
+
+  // Download
+  'play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
+  'ig', 'igstory', 'facebook', 'twitter', 'spotify',
+  'mediafire', 'gdrive', 'gitclone', 'pinterest', 'img',
+
+  // Search
+  'google',
+
+  // Game & Fun
+  'tictactoe', 'delttt', 'math', 'ppt', 'suit', 'slot', 'casino',
+  'yourmom', 'teri', 'tebakgambar', 'tebakkata', 'coinflip', 'dadu',
+
+  // Sticker & Media
+  'sticker', 'take', 'smaker', 'getsticker', 'emix', 'toimg', 'tovid',
+  'attp', 'ttp', 'brat', 'bratcolor', 'brathd', 'bratvid', 'bratvid2',
+  'brat2', 'brat3', 'anyabrat', 'animebrat', 'animebrat2', 'qc', 'qc2',
+  'smeme', 'emojigif', 'gifsticker', 'stly', 'stickerlysearch',
+  'telestick', 'tenor', 'stickersearch', 'ryo',
+
+  // TTS
+  'tts',
+
+  // Tools
+  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf',
+
+  // Group Management
+  'antilink', 'antispam', 'welcome', 'groupinfo', 'linkgroup', 'revoke',
+  'tagall', 'hidetag', 'kick', 'add', 'promote', 'demote', 'open', 'close',
+
+  // Owner Commands
+  'broadcast', 'join', 'leave', 'restart', 'shutdown',
+  'addprem', 'delprem', 'listprem', 'ban', 'unban', 'block', 'unblock', 'warn',
+
+  // AI
+  'ai', 'ask', 'imagine', 'summarize'
+]);
+
+// Sesi percakapan registrasi user (.daftar)
+const registrationSessions = new Map();
 
 /**
  * Unduh buffer media dari objek pesan Baileys
@@ -57,6 +123,8 @@ async function handleMessage(sock, msg, startTime) {
   if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
 
   const chatId = msg.key.remoteJid;
+  msg.chat = chatId;
+  let commandHasFailed = false;
   const isGroup = chatId.endsWith('@g.us');
   const botNumber = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
   const rawSender = msg.key.fromMe
@@ -111,14 +179,33 @@ async function handleMessage(sock, msg, startTime) {
     ''
   ).trim();
 
-  // Objek helper reply dengan auto-mention cerdas
+  // Objek helper reply dengan auto-mention cerdas dan validasi member grup aktif
   const reply = async (text, options = {}) => {
-    const textMentions = (String(text).match(/@(\d+)/g) || []).map((v) => `${v.slice(1)}@s.whatsapp.net`);
-    const combinedMentions = [...new Set([...(options.mentions || []), ...textMentions])];
-    const opts = { ...options };
-    if (combinedMentions.length > 0) {
-      opts.mentions = combinedMentions.map((j) => jidNormalizedUser(j));
+    if (typeof text === 'string' && (text.trim().startsWith('❌') || text.trim().startsWith('🚫'))) {
+      commandHasFailed = true;
     }
+    const opts = { ...options };
+    if (!options.skipAutoMention) {
+      const textMentions = (String(text).match(/@(\d+)/g) || []).map((v) => `${v.slice(1)}@s.whatsapp.net`);
+      let combinedMentions = [...new Set([...(options.mentions || []), ...textMentions])];
+      if (isGroup && Array.isArray(groupMembers) && groupMembers.length > 0) {
+        combinedMentions = filterActiveMentions(combinedMentions, groupMembers.map((m) => m.id));
+      }
+      if (combinedMentions.length > 0) {
+        opts.mentions = combinedMentions.map((j) => jidNormalizedUser(j));
+      }
+    } else if (options.mentions && Array.isArray(options.mentions)) {
+      let safeMentions = options.mentions;
+      if (isGroup && Array.isArray(groupMembers) && groupMembers.length > 0) {
+        safeMentions = filterActiveMentions(safeMentions, groupMembers.map((m) => m.id));
+      }
+      if (safeMentions.length > 0) {
+        opts.mentions = safeMentions.map((j) => jidNormalizedUser(j));
+      } else {
+        delete opts.mentions;
+      }
+    }
+    delete opts.skipAutoMention;
     try {
       return await sock.sendMessage(chatId, { text, ...opts }, { quoted: msg });
     } catch (_) {
@@ -126,28 +213,12 @@ async function handleMessage(sock, msg, startTime) {
     }
   };
 
-  // Helper kehadiran (WhatsApp typing presence dengan auto keep-alive agar tetap ada selama proses)
-  let typingInterval = null;
+  // Helper kehadiran (WhatsApp typing presence dengan auto keep-alive & concurrency tracking)
   const setPresence = async (status) => {
     if (status === 'composing') {
-      try {
-        await sock.sendPresenceUpdate('composing', chatId);
-      } catch (_) {}
-      if (!typingInterval) {
-        typingInterval = setInterval(async () => {
-          try {
-            await sock.sendPresenceUpdate('composing', chatId);
-          } catch (_) {}
-        }, 4000);
-      }
+      await startTyping(sock, chatId);
     } else {
-      if (typingInterval) {
-        clearInterval(typingInterval);
-        typingInterval = null;
-      }
-      try {
-        await sock.sendPresenceUpdate('paused', chatId);
-      } catch (_) {}
+      await stopTyping(sock, chatId);
     }
   };
 
@@ -308,6 +379,19 @@ async function handleMessage(sock, msg, startTime) {
         mentions: [sender]
       });
     }
+  }
+
+  // 4. Sesi interaktif registrasi user (.daftar)
+  if (registrationSessions.has(sender) && !config.prefixes.some((p) => body.startsWith(p)) && body.trim().length > 0) {
+    registrationSessions.delete(sender);
+    const regName = body.trim();
+    userDb.registerUser(sender, regName);
+    return reply(
+      `Registrasi berhasil.\n\n` +
+      `Nama: ${regName}\n` +
+      `Status: UNLIMITED\n\n` +
+      `Sekarang kamu dapat menggunakan fitur bot tanpa batas.`
+    );
   }
 
   // Cek Prefix
@@ -481,7 +565,7 @@ async function handleMessage(sock, msg, startTime) {
     'ttt': 'tictactoe',
     'coin': 'coinflip',
     'dice': 'dadu',
-    // Sticker
+    // Sticker & Media
     's': 'sticker',
     'stk': 'sticker',
     'stiker': 'sticker',
@@ -492,6 +576,55 @@ async function handleMessage(sock, msg, startTime) {
     'bratgif': 'bratvid',
     'bratv': 'bratvid',
     'bratanim': 'bratvid',
+    'anyabrat': 'anyabrat',
+    'anyabr': 'anyabrat',
+    'bratcolor': 'bratcolor',
+    'brathd': 'brathd',
+    'bratvid2': 'bratvid2',
+    'brat2': 'brat2',
+    'brat3': 'brat3',
+    'animebrat': 'animebrat',
+    'animebrat2': 'animebrat2',
+    'ttp': 'ttp',
+    'attp': 'attp',
+    'qc': 'qc',
+    'qc2': 'qc2',
+    'smeme': 'smeme',
+    'emojigif': 'emojigif',
+    'emojimix': 'emix',
+    'gifsticker': 'gifsticker',
+    'stly': 'stly',
+    'stickerlysearch': 'stly',
+    'telestick': 'telestick',
+    'tenor': 'tenor',
+    'stickersearch': 'stickersearch',
+    'ryo': 'ryo',
+    // TTS
+    'tts': 'tts',
+    'tiktoktts': 'tts',
+    'say': 'tts',
+    // User & Limit
+    'daftar': 'daftar',
+    'register': 'daftar',
+    'me': 'me',
+    'ceklimit': 'limit',
+    'limitgc': 'limit',
+    'limitgrup': 'limit',
+    // Admin DB & User Management
+    'users': 'users',
+    'userinfo': 'userinfo',
+    'resetlimit': 'resetlimit',
+    'setunlimited': 'setunlimited',
+    'setlimit': 'setlimit',
+    'addadmin': 'addadmin',
+    'tambahadmin': 'addadmin',
+    'deladmin': 'deladmin',
+    'hapusadmin': 'deladmin',
+    'listadmin': 'listadmin',
+    'daftaruser': 'daftaruser',
+    'reguser': 'daftaruser',
+    'deluser': 'deluser',
+    'hapususer': 'deluser',
     // Tools
     'qr': 'qrcode',
     'short': 'shorturl',
@@ -501,6 +634,8 @@ async function handleMessage(sock, msg, startTime) {
     // Group
     'infogc': 'groupinfo',
     'linkgc': 'linkgroup',
+    'tagang': 'tagall',
+    'mentionall': 'tagall',
     // Owner
     'bc': 'broadcast',
     'own': 'owner',
@@ -510,10 +645,7 @@ async function handleMessage(sock, msg, startTime) {
     // Bot
     'info': 'infobot',
     'start': 'menu',
-    'donasi': 'donate',
-    'ceklimit': 'limit',
-    'limitgc': 'limit',
-    'limitgrup': 'limit'
+    'donasi': 'donate'
   };
 
   if (aliases[command]) {
@@ -526,10 +658,36 @@ async function handleMessage(sock, msg, startTime) {
 
   if (!command) return;
 
+  const isValidCommand = VALID_COMMANDS.has(command);
+  if (!isValidCommand) return;
+
   db.incrementHit();
 
-  await setPresence('composing');
+  // List perintah yang terkena sistem limit pengguna
+  const LIMITED_COMMANDS = new Set([
+    'play', 'play2', 'tiktok', 'tiktokfoto', 'tiktokstalk', 'ig', 'igstory',
+    'facebook', 'twitter', 'spotify', 'mediafire', 'gdrive', 'gitclone', 'img', 'pinterest',
+    'sticker', 'take', 'smaker', 'getsticker', 'emix', 'toimg', 'tovid', 'attp', 'ttp',
+    'brat', 'bratcolor', 'brathd', 'bratvid', 'bratvid2', 'brat2', 'brat3', 'anyabrat',
+    'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly',
+    'telestick', 'tenor', 'stickersearch', 'ryo',
+    'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc',
+    'ai', 'ask', 'imagine', 'summarize', 'tts'
+  ]);
+
+  let commandExecutedSuccessfully = false;
+  const isLimitedCmd = LIMITED_COMMANDS.has(command);
+
+  // Status Pemrosesan Global: Reaksi ⏳ + Indikator Mengetik (composing)
+  await startProcessing(sock, msg);
   try {
+    if (isLimitedCmd) {
+      const limitCheck = checkUserLimit(sender, isOwner, isGroup);
+      if (!limitCheck.allowed) {
+        commandHasFailed = true;
+        return reply(limitCheck.message);
+      }
+    }
   /* ====================================================================
    * 1. 🤖 BOT MENU
    * ==================================================================== */
@@ -597,18 +755,52 @@ async function handleMessage(sock, msg, startTime) {
 ├ .dadu
 ╰──────────────
 
-╭───〔 🧩 STICKER 〕
+╭───〔 🧩 STICKER & MEDIA 〕
 │
-├ .sticker
-├ .take
-├ .smaker
-├ .getsticker
-├ .emix
+├ .sticker [pack|author]
+├ .take / .wm [pack|author]
+├ .smaker <teks>
+├ .getsticker <keyword>
+├ .stickersearch <query>
+├ .emix / .emojimix
 ├ .toimg
-├ .tovid
-├ .attp
-├ .brat
-├ .bratvid / .bratgif
+├ .tovideo
+├ .attp <teks>
+├ .ttp <teks>
+├ .brat <teks>
+├ .brat2 <teks>
+├ .brat3 <teks>
+├ .bratcolor <teks>|<bg>|<txt>
+├ .brathd <teks>
+├ .bratvid <teks>
+├ .bratvid2 <teks>
+├ .anyabrat <teks>
+├ .animebrat <teks>
+├ .animebrat2 <teks>
+├ .qc [warna]|[teks]
+├ .qc2 [warna]|[teks]
+├ .smeme <atas>|<bawah>
+├ .emojigif <emoji>
+├ .gifsticker <query>,<jml>
+├ .stly / .stickerlysearch
+├ .telestick <url>
+├ .tenor <query>
+├ .ryo
+╰──────────────
+
+╭───〔 🗣️ VOICE & TTS 〕
+│
+├ .tts <teks>
+├ .tts <lang> <teks>
+├ .tiktoktts <teks>
+├ .say <teks>
+╰──────────────
+
+╭───〔 👤 USER & LIMIT 〕
+│
+├ .daftar [nama]
+├ .register [nama]
+├ .limit / .me
 ╰──────────────
 
 ╭───〔 🛠️ TOOLS 〕
@@ -642,8 +834,18 @@ async function handleMessage(sock, msg, startTime) {
 ├ .welcome
 ╰──────────────
 
-╭───〔 👑 OWNER 〕
+╭───〔 👑 OWNER & ADMIN 〕
 │
+├ .addadmin <nomor>
+├ .deladmin <nomor>
+├ .listadmin
+├ .daftaruser <nomor>|<nama>
+├ .deluser <nomor>
+├ .users
+├ .userinfo <nomor>
+├ .resetlimit <nomor>
+├ .setunlimited <nomor>
+├ .setlimit <nomor>
 ├ .addprem
 ├ .delprem
 ├ .listprem
@@ -682,7 +884,7 @@ async function handleMessage(sock, msg, startTime) {
   }
 
   if (command === 'alive') {
-    return reply(`🟢 *${config.botName}* Berjalan Aktif!\nSemua sistem downloader, game, tools, dan modul AI siap digunakan 24/7.`);
+    return reply(`🟢 *${config.botName}* Berjalan Aktif!\nSemua sistem downloader, game, tools, modul stiker, dan AI siap digunakan 24/7.`);
   }
 
   if (command === 'uptime' || command === 'runtime') {
@@ -692,12 +894,12 @@ async function handleMessage(sock, msg, startTime) {
 
   if (command === 'bot' || command === 'infobot') {
     const mem = process.memoryUsage();
+    const stats = userDb.getUsersStats();
     return reply(`🤖 *INFORMASI BOT*\n\n` +
       `• *Nama:* ${config.botName}\n` +
       `• *Versi:* ${config.botVersion}\n` +
       `• *Total Hit:* ${db.getHits().toLocaleString('id-ID')} kali\n` +
-      `• *Limit Grup:* Bebas Limit (Unlimited ♾️)\n` +
-      `• *Limit Pengguna:* Bebas Limit (Unlimited ♾️)\n` +
+      `• *Total User:* ${stats.total.toLocaleString('id-ID')} user\n` +
       `• *Node.js:* ${process.version}\n` +
       `• *Platform:* ${process.platform} (${process.arch})\n` +
       `• *RAM Digunakan:* ${formatBytes(mem.rss)}\n` +
@@ -705,12 +907,30 @@ async function handleMessage(sock, msg, startTime) {
       `• *Owner:* ${config.owner.name}`);
   }
 
-  if (command === 'limit' || command === 'ceklimit') {
-    return reply(`📊 *STATUS LIMIT SIKANBOT*\n\n` +
-      `• *Limit Grup:* Bebas Limit (Unlimited ♾️)\n` +
-      `• *Limit Pengguna:* Bebas Limit (Unlimited ♾️)\n` +
-      `• *Total Hit Bot:* ${db.getHits().toLocaleString('id-ID')} kali\n\n` +
-      `Seluruh fitur SikanBot (Downloader, Stiker, AI, Tools, Game) bebas digunakan tanpa batas harian.`);
+  if (command === 'limit' || command === 'ceklimit' || command === 'me') {
+    commandExecutedSuccessfully = true;
+    return reply(formatUserStatus(sender, isOwner, isGroup));
+  }
+
+  if (command === 'daftar' || command === 'register') {
+    const existingUser = userDb.getUser(sender);
+    if (existingUser && existingUser.registered === 1) {
+      return reply('Anda sudah terdaftar sebagai pengguna unlimited.');
+    }
+
+    if (q) {
+      userDb.registerUser(sender, q);
+      commandExecutedSuccessfully = true;
+      return reply(
+        `Registrasi berhasil.\n\n` +
+        `Nama: ${q}\n` +
+        `Status: UNLIMITED\n\n` +
+        `Sekarang kamu dapat menggunakan fitur bot tanpa batas.`
+      );
+    }
+
+    registrationSessions.set(sender, true);
+    return reply('Silakan balas dengan nama lengkap kamu.');
   }
 
   if (command === 'owner') {
@@ -1515,9 +1735,369 @@ async function handleMessage(sock, msg, startTime) {
     if (!q) return reply(`Masukkan teks untuk stiker brat animasi/bergerak!\nContoh: *${config.prefix}bratvid lagi mikirin kamu*`);
     try {
       const bratSticker = await createBratVideoSticker(q, config.sticker.packname, config.sticker.author);
+      commandExecutedSuccessfully = true;
       await sock.sendMessage(chatId, { sticker: bratSticker }, { quoted: msg });
     } catch (e) {
       reply(`❌ Gagal membuat stiker brat animasi: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'anyabrat') {
+    if (!q) return reply(`Masukkan teks stiker Anya Brat!\nContoh: *${config.prefix}anyabrat waku waku*`);
+    try {
+      const stk = await generateBratCustom({ text: q, isAnya: true });
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker Anya: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'bratcolor') {
+    if (!q) return reply(`Format: *${config.prefix}bratcolor <teks>|<background>|<warna font>*\nContoh: *${config.prefix}bratcolor SikanBot|black|yellow*`);
+    try {
+      const parts = q.split('|').map((s) => s.trim());
+      const txt = parts[0] || 'brat';
+      const bg = parts[1] || '#ffffff';
+      const clr = parts[2] || '#000000';
+      const stk = await generateBratCustom({ text: txt, bgColor: bg, textColor: clr });
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker bratcolor: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'brathd') {
+    if (!q) return reply(`Masukkan teks untuk stiker Brat HD!\nContoh: *${config.prefix}brathd sikanbot hd*`);
+    try {
+      const stk = await generateBratCustom({ text: q, isHd: true });
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker HD: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'brat2') {
+    if (!q) return reply(`Masukkan teks untuk stiker Brat Lime Classic!\nContoh: *${config.prefix}brat2 Charli XCX*`);
+    try {
+      const stk = await generateBratCustom({ text: q, bgColor: '#8ACE00', textColor: '#000000' });
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker brat2: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'brat3') {
+    if (!q) return reply(`Masukkan teks untuk stiker Brat Inverted!\nContoh: *${config.prefix}brat3 dark brat*`);
+    try {
+      const stk = await generateBratCustom({ text: q, bgColor: '#000000', textColor: '#ffffff' });
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker brat3: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'bratvid2') {
+    if (!q) return reply(`Masukkan teks untuk stiker Brat Video V2!\nContoh: *${config.prefix}bratvid2 sedang berproses*`);
+    try {
+      const bratSticker = await createBratVideoSticker(q, config.sticker.packname, config.sticker.author);
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: bratSticker }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker bratvid2: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'animebrat' || command === 'animebrat2') {
+    const txt = q || (command === 'animebrat2' ? 'anime brat kawaii' : 'anime brat');
+    try {
+      const stk = await generateBratCustom({
+        text: txt,
+        bgColor: command === 'animebrat2' ? '#fdf2f8' : '#fff1f2',
+        textColor: '#be185d',
+        isAnime: true
+      });
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat anime brat: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'ttp') {
+    if (!q) return reply(`Masukkan teks untuk stiker TTP!\nContoh: *${config.prefix}ttp Halo Semua*`);
+    try {
+      const stk = await generateTTP(q);
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat TTP: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'qc' || command === 'qc2') {
+    const isQc2 = command === 'qc2';
+    let targetText = q;
+    let customColor = isQc2 ? '#1e1b4b' : '#1f2c34';
+
+    if (q.includes('|')) {
+      const parts = q.split('|').map((s) => s.trim());
+      if (parts[0].startsWith('#') || ['red', 'blue', 'green', 'black', 'white', 'purple', 'yellow', 'orange', 'pink'].includes(parts[0].toLowerCase())) {
+        customColor = parts[0];
+        targetText = parts.slice(1).join(' ');
+      }
+    } else if (isQc2 && q && !q.includes(' ') && (q.startsWith('#') || ['red', 'blue', 'green', 'black', 'white', 'purple', 'yellow'].includes(q.toLowerCase()))) {
+      customColor = q;
+      targetText = quoted ? (quoted.conversation || quoted.extendedTextMessage?.text || '') : '';
+    }
+
+    if (!targetText && quoted) {
+      targetText = quoted.conversation || quoted.extendedTextMessage?.text || quoted.imageMessage?.caption || quoted.videoMessage?.caption || '';
+    }
+
+    if (!targetText) {
+      return reply(`Masukkan teks quote atau balas pesan dengan *${config.prefix}${command}*!\nContoh: *${config.prefix}qc Halo dunia* atau *${config.prefix}qc #2563eb|Kutipan saya*`);
+    }
+
+    try {
+      let avatarUrl = '';
+      const quotedSender = msg.message?.extendedTextMessage?.contextInfo?.participant;
+      const targetJid = quoted ? (quotedSender || sender) : sender;
+      try {
+        avatarUrl = await sock.profilePictureUrl(targetJid, 'image');
+      } catch (_) {}
+
+      const targetName = quoted ? (pushName || 'Anggota') : (pushName || 'Kak');
+      const stk = await generateQuoteChat({
+        name: targetName,
+        text: targetText,
+        avatarUrl,
+        bgColor: customColor,
+        style: isQc2 ? 2 : 1
+      });
+
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat Quote Chat: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'smeme') {
+    const targetImage = rawMessage?.imageMessage || quotedMessage?.imageMessage || rawMessage?.stickerMessage || quotedMessage?.stickerMessage;
+    if (!targetImage) {
+      return reply(`Balas gambar atau stiker dengan *${config.prefix}smeme <teks atas>|<teks bawah>*\nContoh: *${config.prefix}smeme teks atas|teks bawah*`);
+    }
+
+    const parts = q.split('|').map((s) => s.trim());
+    const top = parts[0] || '';
+    const bottom = parts[1] || '';
+
+    if (!top && !bottom) {
+      return reply(`Masukkan teks meme!\nContoh: *${config.prefix}smeme ketika tugas selesai|tapi salah matkul*`);
+    }
+
+    try {
+      const isSticker = Boolean(rawMessage?.stickerMessage || quotedMessage?.stickerMessage);
+      const buffer = await getMediaBuffer(targetImage, isSticker ? 'sticker' : 'image');
+      const imgBuffer = isSticker ? await webpToImage(buffer) : buffer;
+      const memeStk = await generateStickerMeme(imgBuffer, top, bottom);
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: memeStk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat sticker meme: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'emojigif') {
+    if (!q) return reply(`Masukkan emoji!\nContoh: *${config.prefix}emojigif 😎*`);
+    const emojis = q.match(/\p{Emoji}/gu) || [];
+    if (emojis.length === 0) return reply('Harap masukkan emoji yang valid!');
+    try {
+      const code = emojis[0].codePointAt(0).toString(16);
+      const url = `https://fonts.gstatic.com/s/e/notoemoji/latest/${code}/512.webp`;
+      const res = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
+      const stk = await mediaToWebp(res.data, true, config.sticker.packname, config.sticker.author);
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply('❌ Animasi emoji tidak ditemukan atau tidak tersedia.');
+    }
+    return;
+  }
+
+  if (command === 'gifsticker') {
+    if (!q) return reply(`Masukkan kata kunci pencarian GIF!\nContoh: *${config.prefix}gifsticker anime dance, 1*`);
+    const parts = q.split(',');
+    const query = (parts[0] || '').trim();
+    const count = Math.min(3, Math.max(1, parseInt(parts[1]) || 1));
+    try {
+      const gifs = await searchTenor(query, count);
+      if (gifs.length === 0) return reply('❌ GIF tidak ditemukan.');
+      for (let i = 0; i < Math.min(count, gifs.length); i++) {
+        const item = gifs[i];
+        const mediaUrl = item.mp4Url || item.gifUrl;
+        const res = await axios.get(mediaUrl, { responseType: 'arraybuffer', timeout: 12000 });
+        const stk = await mediaToWebp(res.data, true, config.sticker.packname, config.sticker.author);
+        await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+      }
+      commandExecutedSuccessfully = true;
+    } catch (e) {
+      reply(`❌ Gagal mengambil GIF: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'stly' || command === 'stickerlysearch') {
+    if (!q) return reply(`Masukkan kata kunci stiker!\nContoh: *${config.prefix}stly cat lucu*`);
+    try {
+      const packs = await searchStickerly(q);
+      if (!packs || packs.length === 0) return reply('❌ Paket stiker tidak ditemukan di Sticker.ly.');
+      const pack = packs[0];
+      let sent = 0;
+      const stickers = pack.stickers || [];
+      for (const s of stickers.slice(0, 3)) {
+        const sUrl = s.url || s.stickerUrl;
+        if (!sUrl) continue;
+        const sRes = await axios.get(sUrl, { responseType: 'arraybuffer', timeout: 10000 });
+        const stk = await mediaToWebp(sRes.data, false, pack.name || config.sticker.packname, pack.authorName || config.sticker.author);
+        await sock.sendMessage(chatId, { sticker: stk });
+        sent++;
+      }
+      commandExecutedSuccessfully = true;
+      if (sent === 0) reply(`📦 Paket ditemukan: *${pack.name}* (${stickers.length} stiker), namun file tidak dapat dimuat.`);
+    } catch (e) {
+      reply(`❌ Gagal mencari stiker: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'telestick') {
+    if (!q) return reply(`Masukkan tautan paket stiker Telegram!\nContoh: *${config.prefix}telestick https://t.me/addstickers/LineFriends*`);
+    try {
+      const urls = await getTelegramStickers(q);
+      if (urls.length === 0) return reply('❌ Paket stiker Telegram tidak ditemukan atau format link tidak sesuai.');
+      let sent = 0;
+      for (const u of urls.slice(0, 3)) {
+        const res = await axios.get(u, { responseType: 'arraybuffer', timeout: 10000 });
+        const stk = await mediaToWebp(res.data, false, config.sticker.packname, config.sticker.author);
+        await sock.sendMessage(chatId, { sticker: stk });
+        sent++;
+      }
+      commandExecutedSuccessfully = true;
+    } catch (e) {
+      reply(`❌ Gagal mengunduh stiker Telegram: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'tenor') {
+    if (!q) return reply(`Masukkan kata kunci pencarian Tenor!\nContoh: *${config.prefix}tenor cat roll*`);
+    try {
+      const gifs = await searchTenor(q, 1);
+      if (gifs.length === 0) return reply('❌ GIF Tenor tidak ditemukan.');
+      const target = gifs[0];
+      const res = await axios.get(target.mp4Url || target.gifUrl, { responseType: 'arraybuffer', timeout: 12000 });
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, {
+        video: res.data,
+        caption: `✨ *Tenor GIF:* ${target.title}`,
+        mimetype: 'video/mp4'
+      }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal mencari Tenor: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'stickersearch') {
+    if (!q) return reply(`Masukkan kata kunci stiker!\nContoh: *${config.prefix}stickersearch patrick*`);
+    try {
+      const pins = await scraper.searchPinterest(q + ' sticker transparent');
+      if (pins.length > 0) {
+        const imgUrl = pins[0].image;
+        const res = await scraper.axios.get(imgUrl, { responseType: 'arraybuffer', timeout: 12000 });
+        const stk = await mediaToWebp(res.data, false, config.sticker.packname, config.sticker.author);
+        commandExecutedSuccessfully = true;
+        await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+      } else {
+        reply('❌ Stiker tidak ditemukan.');
+      }
+    } catch (e) {
+      reply(`❌ Gagal mencari stiker: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'ryo') {
+    try {
+      const ryoUrl = getRandomRyo();
+      const res = await axios.get(ryoUrl, { responseType: 'arraybuffer', timeout: 10000 });
+      const stk = await mediaToWebp(res.data, false, 'Ryo Yamada', 'Bocchi The Rock');
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'tts') {
+    if (!q) {
+      return reply(
+        `Masukkan teks yang ingin diubah menjadi suara!\n\n` +
+        `Contoh:\n` +
+        `• *${config.prefix}tts Halo, selamat datang di SikanBot*\n` +
+        `• *${config.prefix}tts en Good morning everyone*\n` +
+        `• *${config.prefix}tts ar Marhaban ya ramadhan*\n` +
+        `• *${config.prefix}tts ja Konnichiwa*\n` +
+        `• *${config.prefix}tts ko Annyeonghaseyo*`
+      );
+    }
+
+    let lang = 'id';
+    let textToSpeak = q;
+
+    const firstWord = args[0] ? args[0].toLowerCase() : '';
+    if (['id', 'en', 'ar', 'ja', 'ko', 'es', 'fr', 'de', 'ru', 'th', 'vi', 'jw', 'su'].includes(firstWord) && args.length > 1) {
+      lang = firstWord;
+      textToSpeak = args.slice(1).join(' ');
+    }
+
+    let tempAudioPath = null;
+    try {
+      tempAudioPath = await generateTTS(textToSpeak, lang);
+      const audioBuffer = fs.readFileSync(tempAudioPath);
+
+      await sock.sendMessage(chatId, {
+        audio: audioBuffer,
+        mimetype: 'audio/mp4',
+        ptt: true
+      }, { quoted: msg });
+
+      commandExecutedSuccessfully = true;
+    } catch (err) {
+      console.error('[TTS Error]', err.message);
+      reply('❌ Terjadi kesalahan saat memproses Text-To-Speech.');
+    } finally {
+      if (tempAudioPath) {
+        cleanTempAudio(tempAudioPath);
+      }
     }
     return;
   }
@@ -1663,62 +2243,54 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     if (command === 'tagall') {
-      let text = `📢 *TAG ALL MEMBERS*\n${q ? `Pesan: *${q}*\n` : ''}\n`;
-      const mentions = [];
-      groupMembers.forEach((m, i) => {
-        const cleanJid = jidNormalizedUser(m.id);
-        const num = cleanJid.split('@')[0];
-        text += `${i + 1}. @${num}\n`;
-        mentions.push(cleanJid);
-        if (m.id && m.id !== cleanJid) mentions.push(m.id);
-      });
-      return await sock.sendMessage(chatId, { text, mentions: [...new Set(mentions)] });
+      try {
+        const { participants: validList } = await getValidGroupParticipants(sock, chatId);
+        let text = `📢 *TAG ALL MEMBERS*\n${q ? `Pesan: *${q}*\n` : ''}\n`;
+        validList.forEach((jid, i) => {
+          const num = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+          text += `${i + 1}. @${num}\n`;
+        });
+        commandExecutedSuccessfully = true;
+        return await sock.sendMessage(chatId, { text, mentions: validList });
+      } catch (err) {
+        return reply(err.message || '❌ Gagal mengambil daftar anggota grup terbaru.');
+      }
     }
 
     if (command === 'hidetag') {
-      const text = q || '📢 PENGUMUMAN GRUP';
-      const mentions = [];
-      groupMembers.forEach((m) => {
-        mentions.push(jidNormalizedUser(m.id));
-        if (m.id) mentions.push(m.id);
-      });
-      return await sock.sendMessage(chatId, { text, mentions: [...new Set(mentions)] });
+      try {
+        const { participants: validList } = await getValidGroupParticipants(sock, chatId);
+        const text = q || '📢 PENGUMUMAN GRUP';
+        commandExecutedSuccessfully = true;
+        return await sock.sendMessage(chatId, { text, mentions: validList });
+      } catch (err) {
+        return reply(err.message || '❌ Gagal mengambil daftar anggota grup terbaru.');
+      }
     }
 
     if (command === 'open') {
       if (!isBotAdmin) {
-        return reply(
-          '❌ Bot harus menjadi Admin untuk membuka grup!\n\n' +
-          `ℹ️ _Info Diagnostik:_\n` +
-          `• Bot ID: ${botId || '-'}\n` +
-          `• Bot LID: ${botLid || '-'}\n` +
-          `• Peserta Bot: ${botParticipant ? botParticipant.id : 'Tidak Terdeteksi'}\n` +
-          `• Status Admin: ${botParticipant?.admin || 'Bukan Admin'}`
-        );
+        return reply('❌ Bot harus menjadi admin untuk menjalankan command ini.');
       }
       await sock.groupSettingUpdate(chatId, 'not_announcement');
+      commandExecutedSuccessfully = true;
       return reply('🔓 Grup telah dibuka! Semua anggota dapat mengirim pesan.');
     }
 
     if (command === 'close') {
       if (!isBotAdmin) {
-        return reply(
-          '❌ Bot harus menjadi Admin untuk menutup grup!\n\n' +
-          `ℹ️ _Info Diagnostik:_\n` +
-          `• Bot ID: ${botId || '-'}\n` +
-          `• Bot LID: ${botLid || '-'}\n` +
-          `• Peserta Bot: ${botParticipant ? botParticipant.id : 'Tidak Terdeteksi'}\n` +
-          `• Status Admin: ${botParticipant?.admin || 'Bukan Admin'}`
-        );
+        return reply('❌ Bot harus menjadi admin untuk menjalankan command ini.');
       }
       await sock.groupSettingUpdate(chatId, 'announcement');
+      commandExecutedSuccessfully = true;
       return reply('🔒 Grup telah ditutup! Hanya admin yang dapat mengirim pesan.');
     }
 
     if (command === 'linkgroup') {
-      if (!isBotAdmin) return reply('❌ Bot harus menjadi Admin untuk mengambil tautan undangan!');
+      if (!isBotAdmin) return reply('❌ Bot harus menjadi admin untuk menjalankan command ini.');
       try {
         const code = await sock.groupInviteCode(chatId);
+        commandExecutedSuccessfully = true;
         return reply(`🔗 *Tautan Undangan Grup:*\nhttps://chat.whatsapp.com/${code}`);
       } catch (e) {
         return reply('Gagal mengambil tautan undangan.');
@@ -1726,9 +2298,10 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     if (command === 'revoke') {
-      if (!isBotAdmin) return reply('❌ Bot harus menjadi Admin untuk mereset link undangan!');
+      if (!isBotAdmin) return reply('❌ Bot harus menjadi admin untuk menjalankan command ini.');
       try {
         await sock.groupRevokeInvite(chatId);
+        commandExecutedSuccessfully = true;
         return reply('✅ Tautan undangan grup berhasil direset.');
       } catch (e) {
         return reply('Gagal mereset tautan undangan.');
@@ -1738,18 +2311,21 @@ async function handleMessage(sock, msg, startTime) {
     if (command === 'antilink') {
       const val = !db.getGroup(chatId).antilink;
       db.updateGroup(chatId, { antilink: val });
+      commandExecutedSuccessfully = true;
       return reply(`🛡️ *Anti Link* sekarang telah di-${val ? 'AKTIFKAN 🟢' : 'NONAKTIFKAN 🔴'}`);
     }
 
     if (command === 'antispam') {
       const val = !db.getGroup(chatId).antispam;
       db.updateGroup(chatId, { antispam: val });
+      commandExecutedSuccessfully = true;
       return reply(`🛡️ *Anti Spam* sekarang telah di-${val ? 'AKTIFKAN 🟢' : 'NONAKTIFKAN 🔴'}`);
     }
 
     if (command === 'welcome') {
       const val = !db.getGroup(chatId).welcome;
       db.updateGroup(chatId, { welcome: val });
+      commandExecutedSuccessfully = true;
       return reply(`👋 *Pesan Welcome* sekarang telah di-${val ? 'AKTIFKAN 🟢' : 'NONAKTIFKAN 🔴'}`);
     }
 
@@ -1766,24 +2342,18 @@ async function handleMessage(sock, msg, startTime) {
         db.updateUser(target, { warns: 0 });
         if (isBotAdmin) {
           await sock.groupParticipantsUpdate(chatId, [target], 'remove');
-          return reply(`⚠️ @${target.split('@')[0]} telah menerima 3 peringatan dan dikeluarkan dari grup!`, { mentions: [target] });
+          commandExecutedSuccessfully = true;
+          return reply(`⚠️ @${target.split('@')[0]} telah menerima 3 peringatan dan dikeluarkan dari grup!`, { skipAutoMention: true });
         } else {
-          return reply(`⚠️ @${target.split('@')[0]} telah menerima 3 peringatan (Bot bukan admin untuk kick).`, { mentions: [target] });
+          return reply(`⚠️ @${target.split('@')[0]} telah menerima 3 peringatan (Bot bukan admin untuk kick).`);
         }
       } else {
-        return reply(`⚠️ Peringatan untuk @${target.split('@')[0]} (${warns}/3). Hati-hati!`, { mentions: [target] });
+        return reply(`⚠️ Peringatan untuk @${target.split('@')[0]} (${warns}/3). Hati-hati!`);
       }
     }
 
     if (!isBotAdmin) {
-      return reply(
-        '❌ Bot harus menjadi Admin untuk melakukan aksi ini!\n\n' +
-        `ℹ️ _Info Diagnostik:_\n` +
-        `• Bot ID: ${botId || '-'}\n` +
-        `• Bot LID: ${botLid || '-'}\n` +
-        `• Peserta Bot: ${botParticipant ? botParticipant.id : 'Tidak Terdeteksi'}\n` +
-        `• Status Admin: ${botParticipant?.admin || 'Bukan Admin'}`
-      );
+      return reply('❌ Bot harus menjadi admin untuk menjalankan command ini.');
     }
 
     const target = msg.message?.extendedTextMessage?.contextInfo?.participant
@@ -1794,25 +2364,30 @@ async function handleMessage(sock, msg, startTime) {
     if (command === 'kick') {
       await sock.groupParticipantsUpdate(chatId, [target], 'remove');
       groupCache.delete(chatId);
-      return reply(`👢 Berhasil mengeluarkan @${target.split('@')[0]} dari grup.`, { mentions: [target] });
+      commandExecutedSuccessfully = true;
+      const targetNum = target.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+      return reply(`👢 @${targetNum} telah dikeluarkan dari grup.`, { skipAutoMention: true });
     }
 
     if (command === 'add') {
       await sock.groupParticipantsUpdate(chatId, [target], 'add');
       groupCache.delete(chatId);
-      return reply(`✅ Berhasil menambahkan @${target.split('@')[0]} ke grup.`, { mentions: [target] });
+      commandExecutedSuccessfully = true;
+      return reply(`✅ Berhasil menambahkan @${target.split('@')[0]} ke grup.`);
     }
 
     if (command === 'promote') {
       await sock.groupParticipantsUpdate(chatId, [target], 'promote');
       groupCache.delete(chatId);
-      return reply(`👑 @${target.split('@')[0]} sekarang menjadi Admin Grup!`, { mentions: [target] });
+      commandExecutedSuccessfully = true;
+      return reply(`👑 @${target.split('@')[0]} sekarang menjadi Admin Grup!`);
     }
 
     if (command === 'demote') {
       await sock.groupParticipantsUpdate(chatId, [target], 'demote');
       groupCache.delete(chatId);
-      return reply(`📉 @${target.split('@')[0]} telah diturunkan menjadi member biasa.`, { mentions: [target] });
+      commandExecutedSuccessfully = true;
+      return reply(`📉 @${target.split('@')[0]} telah diturunkan menjadi member biasa.`);
     }
   }
 
@@ -1923,6 +2498,144 @@ async function handleMessage(sock, msg, startTime) {
   }
 
   /* ====================================================================
+   * 8.1. 🗄️ ADMIN USER DATABASE & MANAGEMENT
+   * ==================================================================== */
+  if (['addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'users', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit'].includes(command)) {
+    const isBotAdminUser = isOwner || userDb.isBotAdmin(sender);
+
+    // addadmin & deladmin khusus Owner
+    if (['addadmin', 'deladmin'].includes(command)) {
+      if (!isOwner) return reply('❌ Perintah ini khusus untuk *Owner Bot (Rahmat Haikal)*!');
+      const target = (args[0] || '').replace(/[^0-9]/g, '');
+      if (!target) return reply(`Masukkan nomor yang dituju!\nContoh: *${config.prefix}${command} 62822xxx*`);
+
+      if (command === 'addadmin') {
+        userDb.addBotAdmin(target);
+        commandExecutedSuccessfully = true;
+        return reply(`👑 Berhasil mengangkat +${target} sebagai *Admin Bot*! Sekarang user ini memiliki akses kelola user & bebas limit.`);
+      }
+
+      if (command === 'deladmin') {
+        userDb.removeBotAdmin(target);
+        commandExecutedSuccessfully = true;
+        return reply(`✅ Berhasil mencabut hak Admin Bot dari +${target}.`);
+      }
+    }
+
+    // Command lainnya bisa diakses oleh Owner & Admin Bot
+    if (!isBotAdminUser) return reply('❌ Perintah ini khusus untuk *Admin Bot & Owner*!');
+
+    if (command === 'listadmin') {
+      const admins = userDb.listBotAdmins();
+      let text = `👑 *DAFTAR ADMIN BOT*\n\n• Owner: +${config.owner.number.replace(/[^0-9]/g, '')} (${config.owner.name})\n`;
+      if (admins.length === 0) {
+        text += '\n_Belum ada admin tambahan._';
+      } else {
+        admins.forEach((a, i) => {
+          text += `${i + 1}. +${a.phone} ${a.name ? `(${a.name})` : ''}\n`;
+        });
+      }
+      commandExecutedSuccessfully = true;
+      return reply(text.trim());
+    }
+
+    if (command === 'daftaruser') {
+      if (!q || !q.includes('|')) {
+        return reply(`Format pendaftaran user oleh admin:\n*${config.prefix}daftaruser <nomor>|<nama lengkap>*\nContoh: *${config.prefix}daftaruser 628123456789|Ahmad Fauzi*`);
+      }
+      const parts = q.split('|').map((s) => s.trim());
+      const targetNum = (parts[0] || '').replace(/[^0-9]/g, '');
+      const targetName = parts[1] || '';
+
+      if (!targetNum || !targetName) {
+        return reply('Nomor dan nama lengkap wajib diisi!');
+      }
+
+      userDb.adminRegisterUser(targetNum, targetName);
+      commandExecutedSuccessfully = true;
+      return reply(
+        `✅ *REGISTRASI USER BERHASIL (BY ADMIN)*\n\n` +
+        `• Nama   : ${targetName}\n` +
+        `• Nomor  : +${targetNum}\n` +
+        `• Status : UNLIMITED ♾️\n\n` +
+        `User berhasil didaftarkan dan mendapatkan akses tanpa batas.`
+      );
+    }
+
+    if (command === 'deluser') {
+      const target = (args[0] || '').replace(/[^0-9]/g, '');
+      if (!target) return reply(`Masukkan nomor pengguna yang ingin dihapus!\nContoh: *${config.prefix}deluser 62822xxx*`);
+      const ok = userDb.deleteUser(target);
+      if (ok) {
+        commandExecutedSuccessfully = true;
+        return reply(`🗑️ Data pengguna +${target} berhasil dihapus dari database.`);
+      } else {
+        return reply('❌ Pengguna tidak ditemukan di database.');
+      }
+    }
+
+    if (command === 'users') {
+      const stats = userDb.getUsersStats();
+      commandExecutedSuccessfully = true;
+      return reply(
+        `📊 *TOTAL USER*\n\n` +
+        `• Registered : ${stats.registered}\n` +
+        `• Limited    : ${stats.limited}\n` +
+        `• Unlimited  : ${stats.unlimited}\n` +
+        `• Total User : ${stats.total}`
+      );
+    }
+
+    if (command === 'userinfo') {
+      const target = (args[0] || '').replace(/[^0-9]/g, '');
+      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}userinfo 62822xxx*`);
+      const info = userDb.getUserInfo(target);
+      if (!info) return reply('❌ Pengguna tidak ditemukan di database.');
+      commandExecutedSuccessfully = true;
+      return reply(
+        `👤 *USER INFO*\n\n` +
+        `• Nama        : ${info.name || '-'}\n` +
+        `• Nomor WA    : +${info.phone || target}\n` +
+        `• JID         : ${info.jid}\n` +
+        `• Terdaftar   : ${info.registered ? 'Ya (Registered)' : 'Belum'}\n` +
+        `• Role Admin  : ${info.is_admin ? '👑 Admin Bot' : 'User'}\n` +
+        `• Status Limit: ${info.limit_type.toUpperCase()}\n` +
+        `• Penggunaan  : ${info.usage_count} kali\n` +
+        `• Dibuat      : ${new Date(info.created_at).toLocaleString('id-ID')}\n` +
+        `• Diperbarui  : ${new Date(info.updated_at).toLocaleString('id-ID')}`
+      );
+    }
+
+    if (command === 'resetlimit') {
+      const target = (args[0] || '').replace(/[^0-9]/g, '');
+      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}resetlimit 62822xxx*`);
+      const ok = userDb.resetLimit(target);
+      if (ok) {
+        commandExecutedSuccessfully = true;
+        return reply(`✅ Limit penggunaan untuk +${target} berhasil direset menjadi 0.`);
+      } else {
+        return reply('❌ Pengguna tidak ditemukan atau gagal mereset limit.');
+      }
+    }
+
+    if (command === 'setunlimited') {
+      const target = (args[0] || '').replace(/[^0-9]/g, '');
+      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}setunlimited 62822xxx*`);
+      userDb.setUnlimited(target);
+      commandExecutedSuccessfully = true;
+      return reply(`✅ Berhasil mengubah status pengguna +${target} menjadi UNLIMITED.`);
+    }
+
+    if (command === 'setlimit') {
+      const target = (args[0] || '').replace(/[^0-9]/g, '');
+      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}setlimit 62822xxx*`);
+      userDb.setLimit(target);
+      commandExecutedSuccessfully = true;
+      return reply(`✅ Berhasil mengembalikan status pengguna +${target} menjadi LIMITED (maks 50).`);
+    }
+  }
+
+  /* ====================================================================
    * 9. 🤖 AI
    * ==================================================================== */
   if (command === 'ai' || command === 'ask') {
@@ -1959,11 +2672,28 @@ async function handleMessage(sock, msg, startTime) {
       return reply(`❌ Gagal merangkum: ${e.message}`);
     }
   }
+  } catch (err) {
+    commandHasFailed = true;
+    console.error(`[Command Error: ${command}]`, err);
+    try {
+      await reply(`❌ Terjadi kesalahan pada bot: ${err.message || 'Error tidak diketahui'}`);
+    } catch (_) {}
   } finally {
-    await setPresence('paused');
+    if (commandExecutedSuccessfully && isLimitedCmd && !commandHasFailed) {
+      consumeUserLimit(sender, isOwner, isGroup);
+    }
+    const isSuccess = !commandHasFailed;
+    await stopProcessing(sock, msg, isSuccess);
   }
 }
 
 module.exports = {
-  handleMessage
+  handleMessage,
+  startProcessing,
+  stopProcessing,
+  startTyping,
+  stopTyping,
+  setReaction,
+  setProcessingReaction,
+  VALID_COMMANDS
 };

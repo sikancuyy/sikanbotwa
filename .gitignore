@@ -13,6 +13,9 @@ downloads/*
 temp/*
 !temp/.gitkeep
 database.json
+database/*.sqlite
+database/*.sqlite-wal
+database/*.sqlite-shm
 
 # Environment variables
 .env
