@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-const { downloadContentFromMessage, jidNormalizedUser } = require('@whiskeysockets/baileys');
+const { downloadContentFromMessage, jidNormalizedUser, areJidsSameUser } = require('@whiskeysockets/baileys');
 const config = require('./config');
 const db = require('./lib/database');
 const games = require('./lib/games');
@@ -29,16 +29,16 @@ async function getMediaBuffer(mediaObj, type) {
 // In-memory cache untuk group metadata (TTL 5 menit) agar bot tidak freeze / terkena rate limit
 const groupCache = new Map();
 
-async function getGroupMetadataSafe(sock, chatId) {
+async function getGroupMetadataSafe(sock, chatId, forceRefresh = false) {
   const cached = groupCache.get(chatId);
   const now = Date.now();
-  if (cached && (now - cached.time < 5 * 60 * 1000)) {
+  if (!forceRefresh && cached && (now - cached.time < 5 * 60 * 1000)) {
     return cached.data;
   }
   try {
     const data = await Promise.race([
       sock.groupMetadata(chatId),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Group metadata timeout')), 3500))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Group metadata timeout')), 4000))
     ]);
     if (data) {
       groupCache.set(chatId, { data, time: now });
@@ -168,21 +168,71 @@ async function handleMessage(sock, msg, startTime) {
   let isAdmin = isOwner;
   let groupLoaded = false;
 
-  const loadGroupInfo = async () => {
-    if (!isGroup || groupLoaded) return;
+  const loadGroupInfo = async (forceRefresh = false) => {
+    if (!isGroup) return;
+    if (groupLoaded && !forceRefresh) return;
     groupLoaded = true;
     try {
-      groupMetadata = await getGroupMetadataSafe(sock, chatId);
+      groupMetadata = await getGroupMetadataSafe(sock, chatId, forceRefresh);
       if (groupMetadata) {
         groupName = groupMetadata.subject || 'Grup';
         groupMembers = groupMetadata.participants || [];
-        groupAdmins = groupMembers.filter((m) => m.admin).map((m) => m.id);
 
-        const botNum = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
-        const senderNum = (sender || '').split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-        const adminNums = groupAdmins.map((id) => id.split('@')[0].split(':')[0].replace(/[^0-9]/g, ''));
-        isBotAdmin = adminNums.includes(botNum);
-        isAdmin = isOwner || adminNums.includes(senderNum);
+        // Normalisasi identitas bot (ID utama, nomor telepon, dan LID multi-device)
+        const botId = jidNormalizedUser(sock.user?.id || '');
+        const botLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : '';
+        const botJid = sock.user?.jid ? jidNormalizedUser(sock.user.jid) : '';
+
+        // Helper cek apakah participant adalah bot
+        const isBotParticipant = (m) => {
+          if (!m) return false;
+          const pId = m.id ? jidNormalizedUser(m.id) : '';
+          const pLid = m.lid ? jidNormalizedUser(m.lid) : '';
+          const pJid = m.jid ? jidNormalizedUser(m.jid) : '';
+
+          if (botId && (areJidsSameUser(pId, botId) || (pJid && areJidsSameUser(pJid, botId)))) return true;
+          if (botLid && (areJidsSameUser(pId, botLid) || (pLid && areJidsSameUser(pLid, botLid)))) return true;
+          if (botJid && (areJidsSameUser(pId, botJid) || (pJid && areJidsSameUser(pJid, botJid)))) return true;
+          if (botNumber) {
+            const pNum = pId.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+            if (pNum && pNum === botNumber) return true;
+          }
+          return false;
+        };
+
+        // Helper cek apakah participant berstatus admin atau superadmin
+        const checkIsAdmin = (m) => {
+          if (!m) return false;
+          return m.admin === 'admin' || m.admin === 'superadmin' || Boolean(m.isAdmin) || Boolean(m.isSuperAdmin);
+        };
+
+        const adminParticipants = groupMembers.filter(checkIsAdmin);
+        groupAdmins = adminParticipants.map((m) => m.id);
+
+        const botParticipant = groupMembers.find(isBotParticipant) || null;
+        isBotAdmin = Boolean(botParticipant && checkIsAdmin(botParticipant));
+
+        // Debug log status bot admin
+        console.log({
+          botId,
+          botParticipant,
+          botAdminStatus: botParticipant?.admin
+        });
+
+        // Cek status sender apakah admin atau superadmin
+        const senderParticipant = groupMembers.find((m) => {
+          const pId = m.id ? jidNormalizedUser(m.id) : '';
+          const pLid = m.lid ? jidNormalizedUser(m.lid) : '';
+          const pJid = m.jid ? jidNormalizedUser(m.jid) : '';
+          return (
+            areJidsSameUser(pId, sender) ||
+            (pJid && areJidsSameUser(pJid, sender)) ||
+            (pLid && areJidsSameUser(pLid, sender)) ||
+            (senderNumber && pId.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') === senderNumber)
+          );
+        });
+
+        isAdmin = isOwner || Boolean(senderParticipant && checkIsAdmin(senderParticipant));
       }
     } catch (_) {
       isAdmin = isOwner;
@@ -1588,7 +1638,7 @@ async function handleMessage(sock, msg, startTime) {
   if (['add', 'kick', 'promote', 'demote', 'tagall', 'hidetag', 'groupinfo', 'linkgroup', 'revoke', 'open', 'close', 'warn', 'antilink', 'antispam', 'welcome'].includes(command)) {
     if (!isGroup) return reply('Perintah ini hanya dapat digunakan di dalam grup!');
 
-    await loadGroupInfo();
+    await loadGroupInfo(true);
 
     if (command === 'groupinfo') {
       const info = `👥 *INFORMASI GRUP*\n\n` +
@@ -1711,21 +1761,25 @@ async function handleMessage(sock, msg, startTime) {
 
     if (command === 'kick') {
       await sock.groupParticipantsUpdate(chatId, [target], 'remove');
+      groupCache.delete(chatId);
       return reply(`👢 Berhasil mengeluarkan @${target.split('@')[0]} dari grup.`, { mentions: [target] });
     }
 
     if (command === 'add') {
       await sock.groupParticipantsUpdate(chatId, [target], 'add');
+      groupCache.delete(chatId);
       return reply(`✅ Berhasil menambahkan @${target.split('@')[0]} ke grup.`, { mentions: [target] });
     }
 
     if (command === 'promote') {
       await sock.groupParticipantsUpdate(chatId, [target], 'promote');
+      groupCache.delete(chatId);
       return reply(`👑 @${target.split('@')[0]} sekarang menjadi Admin Grup!`, { mentions: [target] });
     }
 
     if (command === 'demote') {
       await sock.groupParticipantsUpdate(chatId, [target], 'demote');
+      groupCache.delete(chatId);
       return reply(`📉 @${target.split('@')[0]} telah diturunkan menjadi member biasa.`, { mentions: [target] });
     }
   }
