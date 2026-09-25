@@ -625,6 +625,7 @@ async function runAllTests() {
 
   // 32. Profil .me: Format rapi sesuai Section 18
   await itAsync('32. Profil .me menampilkan identitas, status, limit, dan statistik command user', async () => {
+    users.deleteUser('6285555555555');
     const replies = [];
     const mockSock = {
       sendMessage: async (chat, content) => {
@@ -1508,7 +1509,7 @@ async function runAllTests() {
 
   // 64. Admin Bot memiliki akses penuh hampir setara owner dan bebas limit
   it('64. Admin Bot memiliki akses penuh hampir setara owner dan bebas limit', () => {
-    const botAdminPhone = '6285555555555';
+    const botAdminPhone = '6285555555559';
     const botAdminJid = `${botAdminPhone}@s.whatsapp.net`;
     users.addBotAdmin(botAdminPhone);
 
@@ -1591,6 +1592,120 @@ async function runAllTests() {
     assert.strictEqual(replyMsg.content.text.includes('Rp10.000'), true);
     assert.strictEqual(replyMsg.content.text.includes('30 Hari'), true);
     assert.strictEqual(replyMsg.content.text.includes('UNLIMITED HIT'), true);
+  });
+
+  // 68. Global Middleware Status: Command berhasil memicu ⏳ + composing -> ✅ + stopped typing
+  await itAsync('68. Global Middleware Status: Command berhasil memicu alur ⏳ + composing -> ✅ + stopped typing', async () => {
+    const reactions = [];
+    const presenceUpdates = [];
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        if (content && content.react) {
+          reactions.push(content.react);
+        }
+        return { key: { id: 'MSG_TEST_68_' + Date.now() } };
+      },
+      sendPresenceUpdate: async (type, chat) => {
+        presenceUpdates.push({ type, chat });
+      }
+    };
+
+    const testMsgKey = { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_USER_SUCCESS_1', fromMe: false };
+    const mockMsg = {
+      key: testMsgKey,
+      message: { conversation: '.ping' }
+    };
+
+    await handleMessage(mockSock, mockMsg);
+
+    // 1. Harus ada reaction ⏳ pada pesan user saat mulai
+    assert.strictEqual(reactions.length >= 2, true, 'Harus ada minimal 2 pembaruan reaksi');
+    assert.strictEqual(reactions[0].text, '⏳', 'Reaksi awal harus ⏳');
+    assert.strictEqual(reactions[0].key, testMsgKey, 'Reaksi harus ditempelkan pada pesan user');
+
+    // 2. Status presence composing harus aktif
+    assert.ok(presenceUpdates.some((p) => p.type === 'composing'), 'Harus mengaktifkan status composing');
+
+    // 3. Saat berhasil: reaction berubah menjadi ✅ dan composing berhenti (paused)
+    const lastReaction = reactions[reactions.length - 1];
+    assert.strictEqual(lastReaction.text, '✅', 'Reaksi akhir command berhasil harus ✅');
+    assert.strictEqual(lastReaction.key, testMsgKey, 'Reaksi akhir harus ditempelkan pada pesan user');
+
+    const lastPresence = presenceUpdates[presenceUpdates.length - 1];
+    assert.strictEqual(lastPresence.type, 'paused', 'Status composing harus dihentikan (paused)');
+  });
+
+  // 69. Global Middleware Status: Command gagal memicu ⏳ + composing -> ❌ + stopped typing
+  await itAsync('69. Global Middleware Status: Command gagal memicu alur ⏳ + composing -> ❌ + stopped typing', async () => {
+    const reactions = [];
+    const presenceUpdates = [];
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        if (content && content.react) {
+          reactions.push(content.react);
+        }
+        return { key: { id: 'MSG_TEST_69_' + Date.now() } };
+      },
+      sendPresenceUpdate: async (type, chat) => {
+        presenceUpdates.push({ type, chat });
+      }
+    };
+
+    // User guest dengan limit habis
+    const exhaustedPhone = '6289911223344';
+    const exhaustedJid = `${exhaustedPhone}@s.whatsapp.net`;
+    users.deleteUser(exhaustedPhone);
+    users.getDb().prepare('DELETE FROM guest_limits WHERE phone = ?').run(exhaustedPhone);
+    users.getDb().prepare('INSERT INTO guest_limits (phone, jid, hits_today, last_reset_date, updated_at) VALUES (?, ?, 10, ?, ?)').run(exhaustedPhone, exhaustedJid, users.getTodayDateString(), Date.now());
+
+    const testMsgKey = { remoteJid: exhaustedJid, id: 'MSG_USER_FAIL_1', fromMe: false };
+    const mockMsg = {
+      key: testMsgKey,
+      message: { conversation: '.play lagu' }
+    };
+
+    await handleMessage(mockSock, mockMsg);
+
+    // 1. Reaksi awal ⏳ pada pesan user
+    assert.strictEqual(reactions[0].text, '⏳');
+    assert.strictEqual(reactions[0].key, testMsgKey);
+
+    // 2. Reaksi akhir berubah menjadi ❌ karena limit habis (gagal)
+    const lastReaction = reactions[reactions.length - 1];
+    assert.strictEqual(lastReaction.text, '❌', 'Reaksi akhir command gagal harus ❌');
+
+    // 3. Status composing dihentikan (paused)
+    const lastPresence = presenceUpdates[presenceUpdates.length - 1];
+    assert.strictEqual(lastPresence.type, 'paused', 'Status composing harus dihentikan (paused)');
+  });
+
+  // 70. Fail-Safe: Error reaction atau presence tidak menyebabkan bot crash
+  await itAsync('70. Fail-Safe: Error pada reaction atau presence tidak menyebabkan bot crash dan command tetap tuntas', async () => {
+    let commandFinished = false;
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        if (content && content.react) {
+          throw new Error('Simulated socket network drop on reaction');
+        }
+        commandFinished = true;
+        return { key: { id: 'MSG_TEST_70_' + Date.now() } };
+      },
+      sendPresenceUpdate: async () => {
+        throw new Error('Simulated socket failure on presence');
+      }
+    };
+
+    const mockMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_USER_FAILSAFE', fromMe: false },
+      message: { conversation: '.ping' }
+    };
+
+    // Eksekusi tidak boleh throw error
+    await handleMessage(mockSock, mockMsg);
+    assert.strictEqual(commandFinished, true, 'Command utama tetap berjalan dan selesai meskipun reaction/presence error');
   });
 
   console.log('\n====================================================');

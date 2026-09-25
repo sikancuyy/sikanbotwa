@@ -156,10 +156,14 @@ async function startProcessing(sock, m) {
  */
 async function stopProcessing(sock, m, isSuccess = true) {
   try {
-    await stopTyping(sock, m);
-    await setReaction(sock, m, isSuccess ? '✅' : '❌');
+    try {
+      await stopTyping(sock, m);
+    } catch (_) {}
+    try {
+      await setReaction(sock, m, isSuccess ? '✅' : '❌');
+    } catch (_) {}
   } catch (error) {
-    console.error('Stop processing error:', error);
+    // Fail-safe: Tidak boleh crash
   }
 }
 

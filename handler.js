@@ -323,9 +323,9 @@ async function handleMessage(sock, msg, startTime) {
 
   // Objek helper reply dengan auto-mention cerdas dan validasi member grup aktif
   const reply = async (text, options = {}) => {
-    if (typeof text === 'string' && (text.trim().startsWith('❌') || text.trim().startsWith('🚫'))) {
+    if (typeof text === 'string' && (text.trim().startsWith('❌') || text.trim().startsWith('🚫') || text.trim().startsWith('⚠️'))) {
       commandHasFailed = true;
-      lastCommandError = text.replace(/^[❌🚫]\s*/, '').trim();
+      lastCommandError = text.replace(/^[❌🚫⚠️]\s*/, '').trim();
     }
     const opts = { ...options };
     if (!options.skipAutoMention) {

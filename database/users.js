@@ -360,14 +360,28 @@ function getTimeUntilMidnightWib() {
     const diffMs = Math.max(0, midnight.getTime() - nowWib.getTime());
     const hours = Math.floor(diffMs / (1000 * 60 * 60));
     const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
 
-    if (hours === 0 && minutes === 0) {
-      const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
-      return `${seconds} detik`;
-    }
-    return `${hours} jam ${minutes} menit`;
+    const str = (hours === 0 && minutes === 0) ? `${seconds} detik` : `${hours} jam ${minutes} menit`;
+    return {
+      hours,
+      minutes,
+      seconds,
+      text: str,
+      toString() {
+        return str;
+      }
+    };
   } catch (_) {
-    return 'beberapa jam ke depan';
+    return {
+      hours: 0,
+      minutes: 0,
+      seconds: 0,
+      text: 'beberapa jam ke depan',
+      toString() {
+        return 'beberapa jam ke depan';
+      }
+    };
   }
 }
 
