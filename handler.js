@@ -9,7 +9,7 @@ const games = require('./lib/games');
 const scraper = require('./lib/scraper');
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe } = require('./utils');
-const { downloadVideo } = require('./downloader');
+const { downloadVideo, downloadAudio } = require('./downloader');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
 const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage, groupCache, getGroupMetadataSafe } = require('./helpers/group');
 const { generateTTS, convertToVoiceNote, cleanTempAudio } = require('./helpers/tts');
@@ -72,6 +72,7 @@ const VALID_COMMANDS = new Set([
 
   // Download
   'play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
+  'tiktokmusic', 'tiktokmusik', 'ttmusik', 'ttmusic', 'ttmp3', 'tiktokmp3',
   'ig', 'igstory', 'facebook', 'twitter', 'spotify',
   'mediafire', 'gdrive', 'gitclone', 'pinterest', 'img',
 
@@ -543,125 +544,179 @@ async function handleMessage(sock, msg, startTime) {
     // Deteksi URL media otomatis (berjalan di private chat dan di grup)
     const urlMatch = body.match(/https?:\/\/[^\s]+/i);
     if (urlMatch) {
-      await setPresence('composing');
-      try {
-        const detectedUrl = urlMatch[0];
+      const detectedUrl = urlMatch[0];
+      const isMediaUrl = /(tiktok\.com|douyin\.com|instagram\.com|facebook\.com|fb\.watch|fb\.com|threads\.net|twitter\.com|x\.com|youtube\.com|youtu\.be|pinterest\.com|pin\.it|spotify\.com|soundcloud\.com|mediafire\.com|drive\.google\.com|capcut\.com|snackvideo\.com|sck\.io|likee\.video|rednote|xiaohongshu\.com)/i.test(detectedUrl);
+
+      // Di grup, hanya proses jika berupa link media agar tidak mengganggu percakapan / link artikel umum
+      if (!isGroup || isMediaUrl) {
+        // Status Pemrosesan: Reaksi ⏳ + Indikator Mengetik (composing)
+        await startProcessing(sock, msg);
+        let downloadSuccess = false;
+        let downloadError = null;
         const requestId = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
 
-        // Jika link adalah TikTok, periksa apakah berupa slide foto atau video
-        if (/tiktok\.com/i.test(detectedUrl)) {
-          try {
-            const data = await scraper.getTikTok(detectedUrl);
-            if (data.isSlide || (Array.isArray(data.images) && data.images.length > 0)) {
-              const totalPhotos = data.images.length;
-              for (let i = 0; i < totalPhotos; i++) {
-                const imgUrl = data.images[i];
-                const isFirst = i === 0;
-                const caption = isFirst
-                  ? `✨ *TikTok Slide Foto (${totalPhotos} Foto)*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}\n\n📷 Foto [1/${totalPhotos}]`
-                  : `📷 Foto [${i + 1}/${totalPhotos}]`;
-                try {
-                  const imgRes = await axios.get(imgUrl, {
-                    responseType: 'arraybuffer',
-                    timeout: 15000,
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-                  });
-                  await sock.sendMessage(chatId, { image: Buffer.from(imgRes.data), caption }, { quoted: isFirst ? msg : undefined });
-                } catch (_) {
-                  await sock.sendMessage(chatId, { image: { url: imgUrl }, caption }, { quoted: isFirst ? msg : undefined });
-                }
-                if (i < totalPhotos - 1) await new Promise((r) => setTimeout(r, 800));
-              }
-              if (data.audioUrl) {
-                try {
-                  await sock.sendMessage(chatId, { audio: { url: data.audioUrl }, mimetype: 'audio/mp4' }, { quoted: msg });
-                } catch (_) {}
-              }
-              return;
-            } else if (data.videoUrl) {
-              await sock.sendMessage(chatId, {
-                video: { url: data.videoUrl },
-                caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}`
-              }, { quoted: msg });
-              return;
-            }
-          } catch (_) {
-            // Lanjut ke fallback jika getTikTok gagal
+        try {
+          // Periksa Limit Pengguna
+          const limitCheck = checkUserLimit(sender, isOwner, isGroup);
+          if (!limitCheck.allowed) {
+            commandHasFailed = true;
+            lastCommandError = limitCheck.message;
+            await reply(limitCheck.message);
+            return;
           }
-        }
 
-        // Jika link adalah Instagram (Reel, Post, Carousel Foto & Video, Story)
-        if (/instagram\.com/i.test(detectedUrl)) {
-          try {
-            const isStory = /instagram\.com\/stories\//i.test(detectedUrl);
-            const data = isStory
-              ? await scraper.getInstagramStory(detectedUrl)
-              : await scraper.getInstagram(detectedUrl);
-
-            if (data && Array.isArray(data.media) && data.media.length > 0) {
-              const totalMedia = data.media.length;
-              for (let i = 0; i < totalMedia; i++) {
-                const item = data.media[i];
-                const isFirst = i === 0;
-                const caption = totalMedia > 1
-                  ? (isFirst ? `✨ *Instagram Carousel (${totalMedia} Media)*\n\n${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]` : `${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]`)
-                  : (isStory ? `✨ *Instagram Story*` : `✨ *Instagram Downloader*`);
-
-                try {
-                  const mediaRes = await axios.get(item.url, {
-                    responseType: 'arraybuffer',
-                    timeout: 30000,
-                    headers: {
-                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                      'Referer': 'https://www.instagram.com/'
-                    }
-                  });
-                  const buffer = Buffer.from(mediaRes.data);
-                  const contentType = String(mediaRes.headers['content-type'] || '').toLowerCase();
-                  const isVideo = contentType.includes('video') || item.type === 'video' || (buffer.length >= 8 && buffer.slice(4, 8).toString('ascii') === 'ftyp') || /\.mp4/i.test(item.url);
-
-                  if (isVideo) {
-                    await sock.sendMessage(chatId, {
-                      video: buffer,
-                      caption,
-                      mimetype: 'video/mp4'
-                    }, { quoted: isFirst ? msg : undefined });
-                  } else {
-                    await sock.sendMessage(chatId, {
-                      image: buffer,
-                      caption
-                    }, { quoted: isFirst ? msg : undefined });
-                  }
-                } catch (_) {
+          // Jika link adalah TikTok, periksa apakah berupa slide foto atau video
+          if (/tiktok\.com/i.test(detectedUrl)) {
+            try {
+              const data = await scraper.getTikTok(detectedUrl);
+              if (data && (data.isSlide || (Array.isArray(data.images) && data.images.length > 0))) {
+                const totalPhotos = data.images.length;
+                for (let i = 0; i < totalPhotos; i++) {
+                  const imgUrl = data.images[i];
+                  const isFirst = i === 0;
+                  const caption = isFirst
+                    ? `✨ *TikTok Slide Foto (${totalPhotos} Foto)*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}\n\n📷 Foto [1/${totalPhotos}]`
+                    : `📷 Foto [${i + 1}/${totalPhotos}]`;
                   try {
-                    if (item.type === 'video') {
-                      await sock.sendMessage(chatId, { video: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
-                    } else {
-                      await sock.sendMessage(chatId, { image: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
-                    }
-                  } catch (e2) {}
+                    const imgRes = await axios.get(imgUrl, {
+                      responseType: 'arraybuffer',
+                      timeout: 15000,
+                      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                    });
+                    await sock.sendMessage(chatId, { image: Buffer.from(imgRes.data), caption }, { quoted: isFirst ? msg : undefined });
+                  } catch (_) {
+                    await sock.sendMessage(chatId, { image: { url: imgUrl }, caption }, { quoted: isFirst ? msg : undefined });
+                  }
+                  if (i < totalPhotos - 1) await new Promise((r) => setTimeout(r, 800));
                 }
-
-                if (i < totalMedia - 1) await new Promise((r) => setTimeout(r, 800));
+                if (data.audioUrl) {
+                  try {
+                    await sock.sendMessage(chatId, { audio: { url: data.audioUrl }, mimetype: 'audio/mp4' }, { quoted: msg });
+                  } catch (_) {}
+                }
+                downloadSuccess = true;
+                return;
+              } else if (data && data.videoUrl) {
+                await sock.sendMessage(chatId, {
+                  video: { url: data.videoUrl },
+                  caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}`
+                }, { quoted: msg });
+                downloadSuccess = true;
+                return;
               }
-              return;
+            } catch (_) {
+              // Lanjut ke fallback yt-dlp jika getTikTok gagal
             }
-          } catch (_) {
-            // Lanjut ke fallback yt-dlp jika getInstagram gagal
           }
-        }
 
-        const result = await downloadVideo(detectedUrl, requestId);
-        const videoBuffer = fs.readFileSync(result.filePath);
-        await sock.sendMessage(chatId, {
-          video: videoBuffer,
-          caption: `🎥 *${result.title}*\n📦 Ukuran: ${formatBytes(result.fileSize)}`,
-          mimetype: 'video/mp4'
-        }, { quoted: msg });
-        deleteFileSafe(result.filePath);
-      } catch (e) {
-      } finally {
-        await setPresence('paused');
+          // Jika link adalah Instagram (Reel, Post, Carousel Foto & Video, Story)
+          if (/instagram\.com/i.test(detectedUrl)) {
+            try {
+              const isStory = /instagram\.com\/stories\//i.test(detectedUrl);
+              const data = isStory
+                ? await scraper.getInstagramStory(detectedUrl)
+                : await scraper.getInstagram(detectedUrl);
+
+              if (data && Array.isArray(data.media) && data.media.length > 0) {
+                const totalMedia = data.media.length;
+                for (let i = 0; i < totalMedia; i++) {
+                  const item = data.media[i];
+                  const isFirst = i === 0;
+                  const caption = totalMedia > 1
+                    ? (isFirst ? `✨ *Instagram Carousel (${totalMedia} Media)*\n\n${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]` : `${item.type === 'video' ? '🎥' : '📷'} Media [${i + 1}/${totalMedia}]`)
+                    : (isStory ? `✨ *Instagram Story*` : `✨ *Instagram Downloader*`);
+
+                  try {
+                    const mediaRes = await axios.get(item.url, {
+                      responseType: 'arraybuffer',
+                      timeout: 30000,
+                      headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Referer': 'https://www.instagram.com/'
+                      }
+                    });
+                    const buffer = Buffer.from(mediaRes.data);
+                    const contentType = String(mediaRes.headers['content-type'] || '').toLowerCase();
+                    const isVideo = contentType.includes('video') || item.type === 'video' || (buffer.length >= 8 && buffer.slice(4, 8).toString('ascii') === 'ftyp') || /\.mp4/i.test(item.url);
+
+                    if (isVideo) {
+                      await sock.sendMessage(chatId, {
+                        video: buffer,
+                        caption,
+                        mimetype: 'video/mp4'
+                      }, { quoted: isFirst ? msg : undefined });
+                    } else {
+                      await sock.sendMessage(chatId, {
+                        image: buffer,
+                        caption
+                      }, { quoted: isFirst ? msg : undefined });
+                    }
+                  } catch (_) {
+                    try {
+                      if (item.type === 'video') {
+                        await sock.sendMessage(chatId, { video: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
+                      } else {
+                        await sock.sendMessage(chatId, { image: { url: item.url }, caption }, { quoted: isFirst ? msg : undefined });
+                      }
+                    } catch (e2) {}
+                  }
+
+                  if (i < totalMedia - 1) await new Promise((r) => setTimeout(r, 800));
+                }
+                downloadSuccess = true;
+                return;
+              }
+            } catch (_) {
+              // Lanjut ke fallback yt-dlp jika getInstagram gagal
+            }
+          }
+
+          if (!downloadSuccess) {
+            const result = await downloadVideo(detectedUrl, requestId);
+            const videoBuffer = fs.readFileSync(result.filePath);
+            await sock.sendMessage(chatId, {
+              video: videoBuffer,
+              caption: `🎥 *${result.title}*\n📦 Ukuran: ${formatBytes(result.fileSize)}`,
+              mimetype: 'video/mp4'
+            }, { quoted: msg });
+            deleteFileSafe(result.filePath);
+            downloadSuccess = true;
+          }
+        } catch (e) {
+          downloadSuccess = false;
+          downloadError = e.message || 'Gagal memproses media';
+          commandHasFailed = true;
+          lastCommandError = downloadError;
+          if (!isGroup) {
+            try {
+              await reply(`❌ Gagal mengunduh media dari link: ${downloadError}`);
+            } catch (_) {}
+          }
+        } finally {
+          if (downloadSuccess) {
+            consumeUserLimit(sender, isOwner, isGroup);
+          }
+          await stopProcessing(sock, msg, downloadSuccess);
+
+          // Log auto-download ke SQLite
+          try {
+            const execTimeSec = ((Date.now() - cmdStartTime) / 1000).toFixed(2);
+            userDb.logCommand({
+              timestamp: Date.now(),
+              userId: sender,
+              number: senderNumber,
+              username: pushName || '',
+              command: 'autodownload',
+              arguments: detectedUrl,
+              chatType: isGroup ? 'group' : 'private',
+              chatId: chatId,
+              groupName: isGroup ? groupName : '',
+              status: downloadSuccess ? 'SUCCESS' : 'FAILED',
+              executionTime: parseFloat(execTimeSec),
+              error: downloadSuccess ? null : downloadError
+            });
+          } catch (_) {}
+        }
       }
     }
     return;
@@ -682,6 +737,13 @@ async function handleMessage(sock, msg, startTime) {
     'tiktokslide': 'tiktok',
     'ttstalk': 'tiktokstalk',
     'stalktt': 'tiktokstalk',
+    'ttmusik': 'tiktokmusic',
+    'ttmusic': 'tiktokmusic',
+    'tiktokmusik': 'tiktokmusic',
+    'ttmp3': 'tiktokmusic',
+    'tiktokmp3': 'tiktokmusic',
+    'ttaudio': 'tiktokmusic',
+    'tiktokaudio': 'tiktokmusic',
     'instagram': 'ig',
     'igdl': 'ig',
     'igpost': 'ig',
@@ -822,6 +884,7 @@ async function handleMessage(sock, msg, startTime) {
   const LIMITED_COMMANDS = new Set([
     // Download
     'play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
+    'tiktokmusic', 'ttmusik',
     'ig', 'igstory', 'facebook', 'twitter', 'spotify',
     'mediafire', 'gdrive', 'gitclone', 'img', 'pinterest',
     // Search
@@ -1416,6 +1479,80 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       } catch (err2) {
         reply(`❌ Gagal memproses TikTok: ${e.message || err2.message}`);
       }
+    }
+    return;
+  }
+
+  if (command === 'tiktokmusic' || command === 'tiktokmusik' || command === 'ttmusik') {
+    let targetUrl = q.trim();
+    if (!targetUrl && quotedMessage) {
+      const quotedText = (
+        quotedMessage?.conversation ||
+        quotedMessage?.extendedTextMessage?.text ||
+        quotedMessage?.imageMessage?.caption ||
+        quotedMessage?.videoMessage?.caption ||
+        ''
+      ).trim();
+      const match = quotedText.match(/https?:\/\/[^\s]+/i);
+      if (match) targetUrl = match[0];
+    }
+
+    if (!targetUrl) {
+      return reply(
+        `🎵 *TikTok Music Downloader*\n\n` +
+        `Kirim perintah beserta link TikTok atau balas pesan yang berisi link TikTok!\n\n` +
+        `*Format:* ${config.prefix}ttmusik <link tiktok>\n` +
+        `*Contoh:* ${config.prefix}ttmusik https://vt.tiktok.com/xxxx/`
+      );
+    }
+
+    try {
+      let audioSent = false;
+      // 1. Coba ambil audio langsung dari scraper getTikTok
+      try {
+        const data = await scraper.getTikTok(targetUrl);
+        if (data && data.audioUrl) {
+          const cleanTitle = (data.title || 'tiktok_music').slice(0, 40).replace(/[\\/:*?"<>|]/g, '').trim() || 'tiktok_music';
+          let audioPayload = { url: data.audioUrl };
+          try {
+            const audioRes = await axios.get(data.audioUrl, {
+              responseType: 'arraybuffer',
+              timeout: 20000,
+              headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+            });
+            audioPayload = Buffer.from(audioRes.data);
+          } catch (_) {}
+
+          await sock.sendMessage(chatId, {
+            audio: audioPayload,
+            mimetype: 'audio/mp4',
+            fileName: `${cleanTitle}.mp3`,
+            ptt: false
+          }, { quoted: msg });
+          audioSent = true;
+          commandExecutedSuccessfully = true;
+          return;
+        }
+      } catch (_) {}
+
+      // 2. Fallback: Ekstraksi audio via downloadAudio (yt-dlp)
+      if (!audioSent) {
+        const reqId = `tt_audio_${Date.now()}`;
+        const result = await downloadAudio(targetUrl, reqId);
+        const audioBuf = fs.readFileSync(result.filePath);
+        const cleanTitle = (result.title || 'tiktok_audio').slice(0, 40).replace(/[\\/:*?"<>|]/g, '').trim() || 'tiktok_audio';
+        await sock.sendMessage(chatId, {
+          audio: audioBuf,
+          mimetype: 'audio/mpeg',
+          fileName: `${cleanTitle}.mp3`,
+          ptt: false
+        }, { quoted: msg });
+        deleteFileSafe(result.filePath);
+        commandExecutedSuccessfully = true;
+        return;
+      }
+    } catch (e) {
+      reply(`❌ Gagal mengunduh musik TikTok: ${e.message}`);
     }
     return;
   }

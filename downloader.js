@@ -230,6 +230,114 @@ function executeDownload(url, id) {
 }
 
 /**
+ * Download audio murni (MP3) dari URL menggunakan yt-dlp & FFmpeg.
+ * @param {string} url URL media
+ * @param {string} id ID transaksi unik
+ * @returns {Promise<{ filePath: string, title: string, fileSize: number }>}
+ */
+function executeDownloadAudio(url, id) {
+  return new Promise((resolve, reject) => {
+    const ytdlpBin = resolveBinary(config.ytdlp);
+    const ffmpegBin = resolveBinary(config.ffmpeg);
+
+    const outputTemplate = path.join(config.downloadDir, `${id}.%(ext)s`);
+
+    const args = [
+      '--no-playlist',
+      '--no-warnings',
+      '--max-filesize', `${config.maxFileSizeMB}M`,
+      '-x',
+      '--audio-format', 'mp3',
+      '--output', outputTemplate,
+      '--print', 'after_move:title',
+      url
+    ];
+
+    if (ffmpegBin && fs.existsSync(ffmpegBin)) {
+      const ffmpegDir = fs.statSync(ffmpegBin).isDirectory() ? ffmpegBin : path.dirname(ffmpegBin);
+      args.splice(args.length - 1, 0, '--ffmpeg-location', ffmpegDir);
+    }
+
+    const cookiesFile = path.join(__dirname, 'cookies.txt');
+    if (fs.existsSync(cookiesFile)) {
+      args.splice(args.length - 1, 0, '--cookies', cookiesFile);
+    }
+
+    log('INFO', `[${id}] Memulai download audio: ${url}`);
+
+    let stdout = '';
+    let stderr = '';
+    const proc = spawn(ytdlpBin, args, { windowsHide: true });
+
+    let isTimedOut = false;
+    const timeout = setTimeout(() => {
+      isTimedOut = true;
+      try { proc.kill('SIGKILL'); } catch (_) {}
+      reject(new Error('TIMEOUT'));
+    }, config.downloadTimeoutMs);
+
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on('error', (err) => {
+      clearTimeout(timeout);
+      log('ERROR', `[${id}] Gagal menjalankan yt-dlp: ${err.message}`);
+      reject(new Error('YTDLP_NOT_FOUND'));
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      if (isTimedOut) return;
+
+      if (code !== 0) {
+        log('WARN', `[${id}] yt-dlp exit code ${code}. Stderr: ${stderr.trim().slice(-200)}`);
+        const lowerErr = stderr.toLowerCase();
+        if (lowerErr.includes('file is larger than max-filesize') || lowerErr.includes('larger than max-filesize')) {
+          return reject(new Error('FILE_TOO_LARGE'));
+        }
+        if (lowerErr.includes('unsupported url') || lowerErr.includes('is not a valid url')) {
+          return reject(new Error('INVALID_URL'));
+        }
+        return reject(new Error('DOWNLOAD_FAILED'));
+      }
+
+      try {
+        const files = fs.readdirSync(config.downloadDir);
+        const matched = files.find((f) => f.startsWith(id + '.') && f !== '.gitkeep');
+
+        if (!matched) {
+          return reject(new Error('FILE_NOT_FOUND'));
+        }
+
+        const filePath = path.join(config.downloadDir, matched);
+        const stats = fs.statSync(filePath);
+
+        if (stats.size > config.maxFileSizeMB * 1024 * 1024) {
+          deleteFileSafe(filePath);
+          return reject(new Error('FILE_TOO_LARGE'));
+        }
+
+        const title = stdout.trim().split('\n').pop() || 'Audio Download';
+
+        log('SUCCESS', `[${id}] Download audio selesai: ${matched} (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
+        resolve({
+          filePath,
+          title,
+          fileSize: stats.size
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  });
+}
+
+/**
  * Menjalankan proses download dengan antrean (queue) untuk keamanan memori.
  * @param {string} url URL video
  * @param {string} id ID transaksi unik
@@ -239,9 +347,20 @@ function downloadVideo(url, id) {
   return downloadQueue.enqueue(() => executeDownload(url, id));
 }
 
+/**
+ * Menjalankan proses download audio murni dengan antrean (queue).
+ * @param {string} url URL media
+ * @param {string} id ID transaksi unik
+ * @returns {Promise<{ filePath: string, title: string, fileSize: number }>}
+ */
+function downloadAudio(url, id) {
+  return downloadQueue.enqueue(() => executeDownloadAudio(url, id));
+}
+
 module.exports = {
   checkYtDlpAvailable,
   getVideoMetadata,
   downloadVideo,
+  downloadAudio,
   downloadQueue
 };

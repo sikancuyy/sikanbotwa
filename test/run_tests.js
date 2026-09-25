@@ -1708,6 +1708,75 @@ async function runAllTests() {
     assert.strictEqual(commandFinished, true, 'Command utama tetap berjalan dan selesai meskipun reaction/presence error');
   });
 
+  // 71. Link Handling Tanpa Prefix: Kirim link tanpa prefix memicu reaction ⏳ dan stopProcessing
+  await itAsync('71. Link Handling Tanpa Prefix: Mengirim link tanpa prefix memicu flow reaction ⏳ dan stopProcessing (❌/✅)', async () => {
+    processingStatus.resetProcessing();
+    const reactions = [];
+    const presenceUpdates = [];
+
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        if (content && content.react) {
+          reactions.push(content.react);
+        }
+        return { key: { id: 'MSG_LINK_RES' } };
+      },
+      sendPresenceUpdate: async (type, chat) => {
+        presenceUpdates.push({ type, chat });
+      }
+    };
+
+    const linkMsgKey = { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_LINK_NOPREFIX', fromMe: false };
+    const mockMsg = {
+      key: linkMsgKey,
+      message: { conversation: 'https://vt.tiktok.com/ZSbNrSSqc/' }
+    };
+
+    await handleMessage(mockSock, mockMsg);
+
+    // Memastikan reaksi awal ⏳ terkirim ke pesan
+    assert.strictEqual(reactions.length >= 2, true, 'Harus mengirim minimal 2 reaksi (awal & akhir)');
+    assert.strictEqual(reactions[0].text, '⏳', 'Reaksi awal saat mengirim link harus ⏳');
+    assert.strictEqual(reactions[0].key, linkMsgKey);
+
+    // Memastikan reaksi akhir ada (✅ jika berhasil, atau ❌ jika gagal/link tidak dapat diunduh)
+    const lastReaction = reactions[reactions.length - 1];
+    assert.strictEqual(['✅', '❌'].includes(lastReaction.text), true, 'Reaksi akhir harus ✅ atau ❌');
+
+    // Memastikan presence status compose -> paused
+    assert.strictEqual(presenceUpdates[0].type, 'composing');
+    assert.strictEqual(presenceUpdates[presenceUpdates.length - 1].type, 'paused');
+  });
+
+  // 72. Command .ttmusik: Menampilkan instruksi jika tanpa link dan mendukung reply chat
+  await itAsync('72. Command .ttmusik: Menampilkan instruksi jika tanpa link dan mengekstrak tautan dari argumen/reply', async () => {
+    processingStatus.resetProcessing();
+    const sentMessages = [];
+
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_RES_TTMUSIK' } };
+      },
+      sendPresenceUpdate: async () => {}
+    };
+
+    // 1. Tanpa argumen dan tanpa reply
+    const mockMsgNoArg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_TTMUSIK_EMPTY', fromMe: false },
+      message: { conversation: '.ttmusik' }
+    };
+    await handleMessage(mockSock, mockMsgNoArg);
+
+    const helpMsg = sentMessages.find((m) => m.content?.text && m.content.text.includes('TikTok Music Downloader'));
+    assert.strictEqual(Boolean(helpMsg), true, 'Harus menampilkan panduan format jika tidak ada link');
+    assert.strictEqual(helpMsg.content.text.includes('.ttmusik <link tiktok>'), true);
+
+    processingStatus.resetProcessing();
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');

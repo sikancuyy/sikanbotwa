@@ -65,6 +65,7 @@ function getDownloadMenu() {
 ├ ${p}yts
 ├ ${p}tt / ${p}tiktok
 ├ ${p}ttfoto / ${p}tiktokfoto
+├ ${p}ttmusik / ${p}ttmp3
 ├ ${p}tiktokstalk
 ├ ${p}ig / ${p}reel
 ├ ${p}igstory / ${p}story
