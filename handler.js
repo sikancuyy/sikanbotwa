@@ -38,6 +38,13 @@ const {
   getInfoMenu,
   getLogMenu
 } = require('./helpers/menus');
+const {
+  getUserNumber,
+  getUserJid,
+  normalizeUserNumber,
+  isValidUserNumber,
+  resolveLidToPhone
+} = require('./helpers/userHelper');
 
 // Daftar seluruh command valid bot
 const VALID_COMMANDS = new Set([
@@ -253,17 +260,32 @@ async function handleMessage(sock, msg, startTime) {
   let lastCommandError = null;
   const cmdStartTime = Date.now();
   const isGroup = chatId.endsWith('@g.us');
+
+  // Ambil nomor user HANYA dari pengirim pesan yang sebenarnya menggunakan satu fungsi getUserNumber() terpusat
+  let userNumber = getUserNumber(msg, sock, null);
+  if (!userNumber && isGroup && (String(msg.key?.participant).includes('@lid') || String(msg.participant).includes('@lid'))) {
+    const gm = await getGroupMetadataSafe(sock, chatId);
+    userNumber = getUserNumber(msg, sock, gm);
+  }
+
+  const senderNumber = userNumber; // Format standar '628xxxxxxxxxx' numerik murni atau null
   const botNumber = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
-  const rawSender = msg.key.fromMe
-    ? (botNumber ? `${botNumber}@s.whatsapp.net` : (isGroup ? (msg.key.participant || msg.participant || chatId) : chatId))
-    : (isGroup ? (msg.key.participant || msg.participant || chatId) : chatId);
-  const normSender = jidNormalizedUser(rawSender || chatId);
-  const senderNumber = normSender.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-  const sender = normSender.includes('@') ? normSender : (senderNumber ? `${senderNumber}@s.whatsapp.net` : rawSender);
+  const ownerNum = config.owner.number.replace(/[^0-9]/g, '');
+
+  const sender = userNumber
+    ? `${userNumber}@s.whatsapp.net`
+    : (msg.key.fromMe
+      ? (botNumber ? `${botNumber}@s.whatsapp.net` : `${ownerNum}@s.whatsapp.net`)
+      : (isGroup ? (msg.key.participant || msg.participant || '') : chatId));
+
   const pushName = msg.pushName || 'Kak';
-  const isOwner = Boolean(msg.key.fromMe) || db.isOwner(sender) || db.isOwner(senderNumber) || (botNumber && senderNumber === botNumber) || (senderNumber === config.owner.number.replace(/[^0-9]/g, ''));
-  const isPrem = isOwner || db.isPremium(sender);
-  const isBanned = isOwner ? false : db.isBanned(sender);
+  const isOwner = Boolean(msg.key.fromMe) ||
+    (senderNumber && senderNumber === ownerNum) ||
+    (botNumber && senderNumber === botNumber) ||
+    (senderNumber && db.isOwner(senderNumber)) ||
+    (sender ? db.isOwner(sender) : false);
+  const isPrem = isOwner || (sender ? db.isPremium(sender) : false);
+  const isBanned = isOwner ? false : (sender ? db.isBanned(sender) : false);
 
   // 1. Unwrap Baileys wrappers (ephemeralMessage, viewOnceMessage, viewOnceMessageV2, documentWithCaptionMessage)
   let rawMessage = msg.message;
@@ -982,6 +1004,9 @@ async function handleMessage(sock, msg, startTime) {
   }
 
   if (command === 'daftar' || command === 'register') {
+    if (!userNumber) {
+      return reply('❌ Gagal memproses pendaftaran: Nomor WhatsApp asli Anda tidak dapat dideteksi. Pastikan privasi nomor Anda terlihat di WhatsApp.');
+    }
     const existingUser = userDb.getUser(sender);
     if (existingUser && existingUser.registered === 1) {
       return reply(`ℹ️ Kamu sudah terdaftar sebagai User #${existingUser.id}.`);
@@ -2619,8 +2644,8 @@ async function handleMessage(sock, msg, startTime) {
     // addadmin & deladmin khusus Owner
     if (['addadmin', 'deladmin'].includes(command)) {
       if (!isOwner) return reply('❌ Perintah ini khusus untuk *Owner Bot (Rahmat Haikal)*!');
-      const target = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!target) return reply(`Masukkan nomor yang dituju!\nContoh: *${config.prefix}${command} 62822xxx*`);
+      const target = normalizeUserNumber(args[0]);
+      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor yang dituju!\nContoh: *${config.prefix}${command} 62822xxx*`);
 
       if (command === 'addadmin') {
         userDb.addBotAdmin(target);
@@ -2657,11 +2682,11 @@ async function handleMessage(sock, msg, startTime) {
         return reply(`Format pendaftaran user oleh admin:\n*${config.prefix}daftaruser <nomor>|<nama lengkap>*\nContoh: *${config.prefix}daftaruser 628123456789|Ahmad Fauzi*`);
       }
       const parts = q.split('|').map((s) => s.trim());
-      const targetNum = (parts[0] || '').replace(/[^0-9]/g, '');
+      const targetNum = normalizeUserNumber(parts[0]);
       const targetName = parts[1] || '';
 
-      if (!targetNum || !targetName) {
-        return reply('Nomor dan nama lengkap wajib diisi!');
+      if (!targetNum || !isValidUserNumber(targetNum) || !targetName) {
+        return reply('Nomor WhatsApp tidak valid atau nama lengkap kosong!');
       }
 
       userDb.adminRegisterUser(targetNum, targetName);
@@ -2676,22 +2701,84 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     if (command === 'deluser') {
-      const target = (args[0] || '').trim();
-      if (!target) return reply(`Masukkan ID user yang ingin dihapus!\nContoh: *${config.prefix}deluser 5*`);
-      const targetId = parseInt(target, 10);
-      let ok = false;
-      if (!isNaN(targetId) && targetId < 100000) {
-        ok = userDb.deleteUserById(targetId);
-      } else {
-        ok = userDb.deleteUser(target);
+      const rawTargets = q.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      if (rawTargets.length === 0) {
+        return reply(`Masukkan ID atau nomor user yang ingin dihapus!\nContoh:\n• *${config.prefix}deluser 5*\n• *${config.prefix}deluser 2, 3, 5* (Hapus & broadcast beberapa user)`);
       }
 
-      if (ok) {
-        commandExecutedSuccessfully = true;
-        return reply(`🗑️ Data user #${target} berhasil dihapus dari database.`);
-      } else {
-        return reply(`❌ User dengan ID ${target} tidak ditemukan.`);
+      const deletedUsers = [];
+      const notFoundTargets = [];
+
+      for (const target of rawTargets) {
+        const targetId = parseInt(target, 10);
+        let u = null;
+        if (!isNaN(targetId) && targetId < 100000) {
+          u = userDb.getUserById(targetId);
+        }
+        if (!u) {
+          const cleanPhone = normalizeUserNumber(target);
+          if (cleanPhone) {
+            u = userDb.getUser(cleanPhone);
+          }
+        }
+
+        if (u) {
+          const ok = userDb.deleteUserById(u.id);
+          if (ok) {
+            if (u.phone && db.data?.users?.[u.phone]) {
+              delete db.data.users[u.phone];
+              db.save();
+            }
+
+            // Siarkan notifikasi penghapusan akun ke WhatsApp user
+            let notified = false;
+            try {
+              const userJid = u.jid || `${u.phone}@s.whatsapp.net`;
+              await sock.sendMessage(userJid, {
+                text: `⚠️ *PEMBERITAHUAN SIKANBOT*\n\nAkun Anda (*#${u.id} - ${u.name}*) telah dinonaktifkan/dihapus dari sistem SikanBot oleh Admin/Owner.\n\nJika ingin menggunakan bot kembali dengan akses penuh, silakan lakukan pendaftaran ulang dengan perintah:\n*${config.prefix}daftar Nama - Kota - Umur*`
+              });
+              notified = true;
+            } catch (_) {}
+
+            deletedUsers.push({
+              id: u.id,
+              name: u.name,
+              phone: u.phone,
+              notified
+            });
+          } else {
+            notFoundTargets.push(target);
+          }
+        } else {
+          notFoundTargets.push(target);
+        }
       }
+
+      if (deletedUsers.length === 0) {
+        return reply(`❌ Tidak ada user yang ditemukan untuk ID/nomor: ${notFoundTargets.join(', ')}.`);
+      }
+
+      commandExecutedSuccessfully = true;
+
+      if (rawTargets.length === 1 && deletedUsers.length === 1) {
+        const u = deletedUsers[0];
+        const bcStatus = u.notified ? '\n📢 Notifikasi telah disiarkan ke WhatsApp user.' : '';
+        return reply(`🗑️ Data user #${u.id} (${u.name}) berhasil dihapus dari database.${bcStatus}`);
+      }
+
+      let out = `🗑️ *HASIL PENGHAPUSAN USER (MULTI / BROADCAST)*\n\n` +
+        `✅ *Berhasil Dihapus (${deletedUsers.length} user):*\n`;
+      deletedUsers.forEach((u) => {
+        const statusNotif = u.notified ? '📢 [Tersiar]' : '⚠️ [Gagal Notif]';
+        out += `• #${u.id} - ${u.name} (+${u.phone}) ${statusNotif}\n`;
+      });
+
+      if (notFoundTargets.length > 0) {
+        out += `\n❌ *Tidak Ditemukan (${notFoundTargets.length}):* ${notFoundTargets.join(', ')}\n`;
+      }
+
+      out += `\nTotal: ${deletedUsers.length} user dihapus & disiarkan.`;
+      return reply(out);
     }
 
     if (command === 'listuser') {
@@ -2780,8 +2867,8 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
     }
 
     if (command === 'userinfo') {
-      const target = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}userinfo 62822xxx*`);
+      const target = normalizeUserNumber(args[0]);
+      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}userinfo 62822xxx*`);
       const info = userDb.getUserInfo(target);
       if (!info) return reply('❌ Pengguna tidak ditemukan di database.');
 
@@ -2817,8 +2904,8 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
     }
 
     if (command === 'resetlimit') {
-      const target = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}resetlimit 62822xxx*`);
+      const target = normalizeUserNumber(args[0]);
+      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}resetlimit 62822xxx*`);
       const ok = userDb.resetLimit(target);
       if (ok) {
         commandExecutedSuccessfully = true;
@@ -2829,16 +2916,16 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
     }
 
     if (command === 'setunlimited') {
-      const target = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}setunlimited 62822xxx*`);
+      const target = normalizeUserNumber(args[0]);
+      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}setunlimited 62822xxx*`);
       userDb.setUnlimited(target);
       commandExecutedSuccessfully = true;
       return reply(`✅ Berhasil mengubah status pengguna +${target} menjadi UNLIMITED.`);
     }
 
     if (command === 'setlimit') {
-      const target = (args[0] || '').replace(/[^0-9]/g, '');
-      if (!target) return reply(`Masukkan nomor pengguna!\nContoh: *${config.prefix}setlimit 62822xxx*`);
+      const target = normalizeUserNumber(args[0]);
+      if (!target || !isValidUserNumber(target)) return reply(`Masukkan nomor pengguna yang valid!\nContoh: *${config.prefix}setlimit 62822xxx*`);
       userDb.setLimit(target);
       commandExecutedSuccessfully = true;
       return reply(`✅ Berhasil mengembalikan status pengguna +${target} menjadi LIMITED (maks 50).`);

@@ -931,6 +931,197 @@ async function runAllTests() {
     assert.strictEqual(Boolean(replyBot), true);
   });
 
+  // 46. getUserNumber mengambil HANYA nomor pengirim asli (bukan group ID, bukan quoted, bukan mentioned)
+  it('46. getUserNumber mengambil HANYA nomor pengirim asli dan menolak ID grup/quoted/mentioned', () => {
+    const { getUserNumber, getUserJid } = require('../helpers/userHelper');
+
+    // Private chat
+    const msgPrivate = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', fromMe: false }
+    };
+    assert.strictEqual(getUserNumber(msgPrivate), '6281234567890');
+    assert.strictEqual(getUserJid(msgPrivate), '6281234567890@s.whatsapp.net');
+
+    // Group chat dengan quoted message dan mentionedJid orang lain
+    const msgGroup = {
+      key: {
+        remoteJid: '1203630283928192@g.us',
+        participant: '6289876543210@s.whatsapp.net',
+        fromMe: false
+      },
+      message: {
+        extendedTextMessage: {
+          text: '.ping',
+          contextInfo: {
+            participant: '6281111111111@s.whatsapp.net', // quoted orang lain
+            mentionedJid: ['6282222222222@s.whatsapp.net'] // mentioned orang lain
+          }
+        }
+      }
+    };
+    // Harus mengambil 6289876543210 (pengirim), BUKAN grup 120363..., BUKAN quoted 628111..., BUKAN mentioned 628222...
+    assert.strictEqual(getUserNumber(msgGroup), '6289876543210');
+
+    // Group chat TANPA participant (tidak dapat dipastikan) -> HARUS return null, TIDAK BOLEH ambil remoteJid grup
+    const msgGroupNoParticipant = {
+      key: { remoteJid: '1203630283928192@g.us', fromMe: false }
+    };
+    assert.strictEqual(getUserNumber(msgGroupNoParticipant), null);
+  });
+
+  // 47. Normalisasi nomor ke format standar 628xxxxxxxxxx
+  it('47. Normalisasi nomor mengubah 08, +628, dan membuang suffix device (:xx)', () => {
+    const { normalizeUserNumber, isValidUserNumber } = require('../helpers/userHelper');
+
+    assert.strictEqual(normalizeUserNumber('081234567890'), '6281234567890');
+    assert.strictEqual(normalizeUserNumber('+62 812-3456-7890'), '6281234567890');
+    assert.strictEqual(normalizeUserNumber('6281234567890:12@s.whatsapp.net'), '6281234567890');
+    assert.strictEqual(isValidUserNumber('6281234567890'), true);
+
+    // Nomor tidak valid
+    assert.strictEqual(isValidUserNumber('123'), false); // terlalu pendek
+    assert.strictEqual(isValidUserNumber('081234567890'), false); // belum dinormalisasi
+    assert.strictEqual(isValidUserNumber('1203630283928192'), false); // ID grup
+    assert.strictEqual(isValidUserNumber('207945304379644'), false); // LID 15 digit
+  });
+
+  // 48. Menolak LID dan identifier internal WhatsApp agar tidak masuk ke database
+  it('48. Menolak LID WhatsApp dan identifier internal dari penyimpanan database', () => {
+    const { getUserNumber } = require('../helpers/userHelper');
+    const uDb = require('../database/users');
+
+    const msgLid = {
+      key: { remoteJid: '1203630283928192@g.us', participant: '207945304379644@lid', fromMe: false }
+    };
+    // LID tanpa mapping harus menghasilkan null
+    assert.strictEqual(getUserNumber(msgLid), null);
+
+    // Memanggil getUser dengan LID tidak boleh menambahkan record ke guest_limits atau users
+    const res = uDb.getUser('207945304379644@lid');
+    assert.strictEqual(res, null);
+
+    const checkDb = uDb.getDb().prepare('SELECT * FROM guest_limits WHERE phone = ?').get('207945304379644');
+    assert.strictEqual(Boolean(checkDb), false, 'LID tidak boleh disimpan ke guest_limits');
+  });
+
+  // 49. Resolver LID ke nomor asli berhasil jika data mapping tersedia di groupMetadata
+  it('49. Resolver LID berhasil mendapatkan nomor WhatsApp asli dari groupMetadata', () => {
+    const { getUserNumber } = require('../helpers/userHelper');
+
+    const mockGroupMetadata = {
+      id: '1203630283928192@g.us',
+      participants: [
+        {
+          id: '6281399887766@s.whatsapp.net',
+          lid: '207945304379644@lid',
+          admin: null
+        }
+      ]
+    };
+
+    const msgWithLid = {
+      key: {
+        remoteJid: '1203630283928192@g.us',
+        participant: '207945304379644@lid',
+        fromMe: false
+      }
+    };
+
+    const resolved = getUserNumber(msgWithLid, null, mockGroupMetadata);
+    assert.strictEqual(resolved, '6281399887766');
+  });
+
+  // 50. .daftar ditolak dengan aman jika nomor asli pengirim tidak dapat dipastikan
+  await itAsync('50. Command .daftar ditolak dengan pesan informatif jika pengirim berupa LID yang tidak dapat di-resolve', async () => {
+    const replies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        replies.push(content);
+        return { key: content.react ? content.react.key : { id: 'REG_FAIL_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+
+    // Pengirim grup dengan LID asing yang tidak bisa di-resolve
+    const mockMsgLid = {
+      key: {
+        remoteJid: '1203630283928192@g.us',
+        participant: '999888777666555@lid',
+        fromMe: false
+      },
+      message: { conversation: '.daftar User Anonim - Jakarta - 25' }
+    };
+
+    await handleMessage(mockSock, mockMsgLid, Date.now());
+    const replyObj = replies.find((r) => r.text && r.text.includes('Nomor WhatsApp asli Anda tidak dapat dideteksi'));
+    assert.strictEqual(Boolean(replyObj), true);
+
+    // Pastikan tidak ada data yang masuk ke users
+    const checkDb = users.getDb().prepare('SELECT * FROM users WHERE name = ?').get('User Anonim');
+    assert.strictEqual(Boolean(checkDb), false, 'User tidak boleh tersimpan jika nomor tidak dapat dipastikan');
+  });
+
+  // 51. Submenu inadmin (getAdminMenu) memuat command .listuser
+  it('51. Submenu inadmin (getAdminMenu) memuat command .listuser', () => {
+    const { getAdminMenu } = require('../helpers/menus');
+    const menu = getAdminMenu();
+    assert.strictEqual(menu.includes('.listuser'), true, 'Menu admin harus memuat .listuser');
+    assert.strictEqual(menu.includes('.deluser'), true, 'Menu admin harus memuat .deluser');
+  });
+
+  // 52. Command .deluser bisa menghapus beberapa user sekaligus dan menyiarkan (broadcast) notifikasi
+  await itAsync('52. Command .deluser bisa menghapus beberapa user sekaligus dan menyiarkan notifikasi ke WhatsApp user', async () => {
+    // Daftarkan 2 user uji coba
+    users.deleteUser('6287700000001');
+    users.deleteUser('6287700000002');
+    const u1 = users.registerUserWithDetails('6287700000001', { name: 'User Multi 1', kota: 'Medan', umur: 21 });
+    const u2 = users.registerUserWithDetails('6287700000002', { name: 'User Multi 2', kota: 'Padang', umur: 22 });
+
+    assert.strictEqual(Boolean(u1), true);
+    assert.strictEqual(Boolean(u2), true);
+
+    const sentMessages = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: content.react ? content.react.key : { id: 'MULTI_DEL_RES' } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6281111111111:1@s.whatsapp.net' }
+    };
+
+    // Owner menjalankan: .deluser <id1>, <id2>
+    const mockMsgDel = {
+      key: {
+        remoteJid: '6282267034994@s.whatsapp.net',
+        id: 'CMD_DEL_MULTI',
+        fromMe: false
+      },
+      message: { conversation: `.deluser ${u1.id}, ${u2.id}` }
+    };
+
+    await handleMessage(mockSock, mockMsgDel, Date.now());
+
+    // Cek balasan admin
+    const adminReply = sentMessages.find((m) => m.content.text && m.content.text.includes('HASIL PENGHAPUSAN USER'));
+    assert.strictEqual(Boolean(adminReply), true, 'Harus mengirim rangkuman penghapusan multi-user');
+    assert.strictEqual(adminReply.content.text.includes(`• #${u1.id} - User Multi 1`), true);
+    assert.strictEqual(adminReply.content.text.includes(`• #${u2.id} - User Multi 2`), true);
+
+    // Cek broadcast notifikasi yang dikirimkan ke kedua user
+    const bcUser1 = sentMessages.find((m) => m.chat === '6287700000001@s.whatsapp.net' && m.content.text && m.content.text.includes('PEMBERITAHUAN SIKANBOT'));
+    const bcUser2 = sentMessages.find((m) => m.chat === '6287700000002@s.whatsapp.net' && m.content.text && m.content.text.includes('PEMBERITAHUAN SIKANBOT'));
+    assert.strictEqual(Boolean(bcUser1), true, 'User 1 harus menerima broadcast notifikasi penghapusan');
+    assert.strictEqual(Boolean(bcUser2), true, 'User 2 harus menerima broadcast notifikasi penghapusan');
+
+    // Pastikan kedua user benar-benar terhapus dari SQLite
+    const check1 = users.getUserById(u1.id);
+    const check2 = users.getUserById(u2.id);
+    assert.strictEqual(Boolean(check1), false, 'User 1 harus terhapus dari database');
+    assert.strictEqual(Boolean(check2), false, 'User 2 harus terhapus dari database');
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');

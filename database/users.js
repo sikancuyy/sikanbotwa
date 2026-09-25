@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const config = require('../config');
+const { normalizeUserNumber, isValidUserNumber } = require('../helpers/userHelper');
 
 // Path database SQLite
 const dbDir = path.join(__dirname);
@@ -127,6 +128,20 @@ function initTables() {
       SELECT phone, jid, usage_count, updated_at FROM users WHERE registered = 0 AND phone IS NOT NULL;
       DELETE FROM users WHERE registered = 0;
     `);
+
+    // Bersihkan identifier non-nomor/LID dari guest_limits dan users jika ada
+    const allGuests = db.prepare('SELECT phone FROM guest_limits').all();
+    for (const g of allGuests) {
+      if (!isValidUserNumber(g.phone)) {
+        db.prepare('DELETE FROM guest_limits WHERE phone = ?').run(g.phone);
+      }
+    }
+    const allUsers = db.prepare('SELECT id, phone FROM users').all();
+    for (const u of allUsers) {
+      if (u.phone && !isValidUserNumber(u.phone)) {
+        db.prepare('DELETE FROM users WHERE id = ?').run(u.id);
+      }
+    }
   } catch (_) {}
 
   // Pastikan Owner (6282267034994) selalu terdaftar sebagai User ID 1
@@ -187,18 +202,19 @@ function initTables() {
   }
 }
 
+function extractPhone(rawJid) {
+  if (!rawJid) return '';
+  const normalized = normalizeUserNumber(rawJid);
+  if (!normalized || !isValidUserNumber(normalized)) return '';
+  return normalized;
+}
+
 /**
  * Normalisasi JID agar format seragam
  */
 function normalizeUserJid(rawJid) {
-  if (!rawJid) return '';
-  const num = String(rawJid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-  return num ? `${num}@s.whatsapp.net` : String(rawJid).trim();
-}
-
-function extractPhone(rawJid) {
-  if (!rawJid) return '';
-  return String(rawJid).split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  const phone = extractPhone(rawJid);
+  return phone ? `${phone}@s.whatsapp.net` : '';
 }
 
 /**

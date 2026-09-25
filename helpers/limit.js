@@ -1,5 +1,6 @@
 const userDb = require('../database/users');
 const config = require('../config');
+const { normalizeUserNumber, isValidUserNumber } = require('./userHelper');
 
 const MAX_LIMITED_USAGE = 50;
 
@@ -19,6 +20,16 @@ function checkUserLimit(jid, isOwner = false, isGroup = false) {
       allowed: true,
       isUnlimited: true,
       remaining: Infinity,
+      user: null
+    };
+  }
+
+  const cleanPhone = normalizeUserNumber(jid);
+  if (!cleanPhone || !isValidUserNumber(cleanPhone)) {
+    return {
+      allowed: true,
+      isUnlimited: false,
+      remaining: MAX_LIMITED_USAGE,
       user: null
     };
   }
@@ -73,6 +84,8 @@ function checkUserLimit(jid, isOwner = false, isGroup = false) {
 function consumeUserLimit(jid, isOwner = false, isGroup = false) {
   // Jangan kurangi limit jika command dijalankan di grup, oleh owner, atau admin bot
   if (isGroup || isOwner || userDb.isBotAdmin(jid)) return;
+  const cleanPhone = normalizeUserNumber(jid);
+  if (!cleanPhone || !isValidUserNumber(cleanPhone)) return;
   const user = userDb.getUser(jid);
   if (user && user.registered === 0 && user.limit_type !== 'unlimited') {
     userDb.incrementUsage(jid, 1);

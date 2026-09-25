@@ -23,6 +23,7 @@ const {
 } = require('./utils');
 const { checkYtDlpAvailable } = require('./downloader');
 const { handleMessage } = require('./handler');
+const { normalizeUserNumber, isValidUserNumber, resolveLidToPhone } = require('./helpers/userHelper');
 
 // Waktu mulai bot untuk kalkulasi uptime
 const startTime = Date.now();
@@ -137,7 +138,14 @@ async function startBot() {
       const groupName = groupMetadata ? groupMetadata.subject : 'Grup';
 
       for (const participant of participants) {
-        const userNum = participant.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+        let userNum = normalizeUserNumber(participant);
+        if ((!userNum || !isValidUserNumber(userNum)) && String(participant).includes('@lid')) {
+          userNum = resolveLidToPhone(participant, sock, groupMetadata);
+        }
+        if (!userNum || !isValidUserNumber(userNum)) {
+          // Abaikan jika bukan nomor WhatsApp asli
+          continue;
+        }
 
         if (action === 'add') {
           const welcomeText = `👋 *SELAMAT DATANG DI ${groupName.toUpperCase()}!*\n\n` +
@@ -147,7 +155,7 @@ async function startBot() {
 
           // Hanya mention jika participant valid
           const activeMentions = groupMetadata?.participants?.some((p) => p.id?.includes(userNum))
-            ? [participant]
+            ? [`${userNum}@s.whatsapp.net`]
             : [];
 
           await sock.sendMessage(id, {

@@ -18,21 +18,21 @@ function getMainCategoryMenu(pushName = 'Kak', isRegistered = false) {
 
 ╭───〔 📚 MENU 〕
 │
-├ ${p}inmenu   → 📚 Menu Utama
-├ ${p}indw     → ⬇️ Download
-├ ${p}inscr    → 🔎 Pencarian
-├ ${p}ingm     → 🎮 Game
-├ ${p}ins      → 🖼️ Sticker
-├ ${p}intts    → 🔊 Text To Speech
+├ ${p}inmenu = 📚 Menu Utama
+├ ${p}indw = ⬇️ Download
+├ ${p}inscr = 🔎 Pencarian
+├ ${p}ingm = 🎮 Game
+├ ${p}ins = 🖼️ Sticker
+├ ${p}intts = 🔊 Text To Speech
 │
-├ ${p}inuser   → 👤 Data User
-├ ${p}intl     → 🛠️ Tools
-├ ${p}ingr     → 👥 Fitur Grup
-├ ${p}inadm    → 👑 Admin Grup
+├ ${p}inuser = 👤 Data User
+├ ${p}intl = 🛠️ Tools
+├ ${p}ingr = 👥 Fitur Grup
+├ ${p}inadm = 👑 Admin Grup
 │
-├ ${p}inai     → 🤖 AI
-├ ${p}ininfo   → ℹ️ Info Bot
-└ ${p}inlog    → 📋 Log Aktivitas
+├ ${p}inai = 🤖 AI
+├ ${p}ininfo = ℹ️ Info Bot
+└ ${p}inlog = 📋 Log Aktivitas
 
 ╰────────────────${unregNote}`;
 }
@@ -214,9 +214,9 @@ function getAdminMenu() {
 ├ ${p}deladmin <nomor>
 ├ ${p}listadmin
 ├ ${p}daftaruser <nomor>|<nama>
-├ ${p}deluser <ID>
-├ ${p}users
+├ ${p}deluser <ID...>
 ├ ${p}listuser
+├ ${p}users
 ├ ${p}infouser <ID>
 ├ ${p}resetlimit <nomor>
 ├ ${p}setunlimited <nomor>
