@@ -126,13 +126,12 @@ function executeDownload(url, id) {
 
     const outputTemplate = path.join(config.downloadDir, `${id}.%(ext)s`);
 
-    // Argumen download: Prioritaskan MP4 H.264 & AAC agar kompatibel dengan pemutar WhatsApp
     const args = [
       '--no-playlist',
       '--no-warnings',
       '--max-filesize', `${config.maxFileSizeMB}M`,
-      // Format seleksi: cari mp4 h264, atau fallback mp4 terbaik
-      '-f', 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+      '--extractor-args', 'youtube:player_client=android,ios,web',
+      '-f', 'bv*[height<=720]+ba/b[height<=720]/best',
       '--merge-output-format', 'mp4',
       '--output', outputTemplate,
       '--print', 'after_move:title',
@@ -246,6 +245,8 @@ function executeDownloadAudio(url, id) {
       '--no-playlist',
       '--no-warnings',
       '--max-filesize', `${config.maxFileSizeMB}M`,
+      '--extractor-args', 'youtube:player_client=android,ios,web',
+      '-f', 'ba/b',
       '-x',
       '--audio-format', 'mp3',
       '--output', outputTemplate,

@@ -71,7 +71,7 @@ const VALID_COMMANDS = new Set([
   'logs', 'loguser', 'logcmd', 'logerror', 'logdownload', 'loggroup',
 
   // Download
-  'play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
+  'play', 'play2', 'ytm', 'ytmp3', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
   'tiktokmusic', 'tiktokmusik', 'ttmusik', 'ttmusic', 'ttmp3', 'tiktokmp3',
   'ig', 'igstory', 'facebook', 'twitter', 'spotify',
   'mediafire', 'gdrive', 'gitclone', 'pinterest', 'img',
@@ -744,6 +744,9 @@ async function handleMessage(sock, msg, startTime) {
     'tiktokmp3': 'tiktokmusic',
     'ttaudio': 'tiktokmusic',
     'tiktokaudio': 'tiktokmusic',
+    'ytm': 'ytm',
+    'ytmp3': 'ytm',
+    'playmp3': 'ytm',
     'instagram': 'ig',
     'igdl': 'ig',
     'igpost': 'ig',
@@ -883,7 +886,7 @@ async function handleMessage(sock, msg, startTime) {
   // List seluruh perintah yang terkena sistem limit pengguna harian (hitung hit)
   const LIMITED_COMMANDS = new Set([
     // Download
-    'play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
+    'play', 'play2', 'ytm', 'ytmp3', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
     'tiktokmusic', 'ttmusik',
     'ig', 'igstory', 'facebook', 'twitter', 'spotify',
     'mediafire', 'gdrive', 'gitclone', 'img', 'pinterest',
@@ -1342,22 +1345,44 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   /* ====================================================================
    * 2. 📥 DOWNLOAD
    * ==================================================================== */
-  if (command === 'play') {
-    if (!q) return reply(`Masukkan judul lagu atau link YouTube!\nContoh: *${config.prefix}play Denny Caknan Cundamani*`);
+  if (command === 'play' || command === 'ytm' || command === 'ytmp3') {
+    let queryText = q.trim();
+    if (!queryText && quotedMessage) {
+      const quotedText = (
+        quotedMessage?.conversation ||
+        quotedMessage?.extendedTextMessage?.text ||
+        quotedMessage?.imageMessage?.caption ||
+        quotedMessage?.videoMessage?.caption ||
+        ''
+      ).trim();
+      if (quotedText) queryText = quotedText;
+    }
+
+    if (!queryText) {
+      return reply(
+        `🎵 *YouTube Music Downloader*\n\n` +
+        `Masukkan judul lagu atau link YouTube!\n\n` +
+        `*Contoh Judul:* ${config.prefix}ytm Denny Caknan Cundamani\n` +
+        `*Contoh Link:* ${config.prefix}play https://www.youtube.com/watch?v=...`
+      );
+    }
 
     const tempAudio = path.join(config.tempDir, `audio_${Date.now()}.mp3`);
     try {
-      const dlRes = await scraper.downloadYouTubeAudio(q, tempAudio);
+      const dlRes = await scraper.downloadYouTubeAudio(queryText, tempAudio);
       if (dlRes.success && fs.existsSync(tempAudio)) {
         const audioBuffer = fs.readFileSync(tempAudio);
+        const cleanTitle = (dlRes.title || 'youtube_music').slice(0, 40).replace(/[\\/:*?"<>|]/g, '').trim() || 'youtube_music';
         await sock.sendMessage(chatId, {
           audio: audioBuffer,
           mimetype: 'audio/mpeg',
+          fileName: `${cleanTitle}.mp3`,
           ptt: false
         }, { quoted: msg });
         deleteFileSafe(tempAudio);
+        commandExecutedSuccessfully = true;
       } else {
-        reply('❌ Gagal mengunduh audio.');
+        reply('❌ Gagal mengunduh audio YouTube.');
       }
     } catch (e) {
       deleteFileSafe(tempAudio);
@@ -1367,11 +1392,30 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   }
 
   if (command === 'play2') {
-    if (!q) return reply(`Masukkan judul video atau link YouTube!\nContoh: *${config.prefix}play2 anime edit*`);
+    let queryText = q.trim();
+    if (!queryText && quotedMessage) {
+      const quotedText = (
+        quotedMessage?.conversation ||
+        quotedMessage?.extendedTextMessage?.text ||
+        quotedMessage?.imageMessage?.caption ||
+        quotedMessage?.videoMessage?.caption ||
+        ''
+      ).trim();
+      if (quotedText) queryText = quotedText;
+    }
+
+    if (!queryText) {
+      return reply(
+        `🎥 *YouTube Video Downloader*\n\n` +
+        `Masukkan judul video atau link YouTube!\n\n` +
+        `*Contoh:* ${config.prefix}play2 anime edit\n` +
+        `*Contoh Link:* ${config.prefix}play2 https://www.youtube.com/watch?v=...`
+      );
+    }
 
     const tempVideo = path.join(config.tempDir, `vid_${Date.now()}.mp4`);
     try {
-      const dlRes = await scraper.downloadYouTubeVideo(q, tempVideo);
+      const dlRes = await scraper.downloadYouTubeVideo(queryText, tempVideo);
       if (dlRes.success && fs.existsSync(tempVideo)) {
         const vidBuffer = fs.readFileSync(tempVideo);
         await sock.sendMessage(chatId, {
@@ -1380,8 +1424,9 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
           mimetype: 'video/mp4'
         }, { quoted: msg });
         deleteFileSafe(tempVideo);
+        commandExecutedSuccessfully = true;
       } else {
-        reply('❌ Gagal mengunduh video.');
+        reply('❌ Gagal mengunduh video YouTube.');
       }
     } catch (e) {
       deleteFileSafe(tempVideo);
@@ -1818,7 +1863,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   }
 
   if (command === 'yts') {
-    if (!q) return reply(`Masukkan judul video YouTube!\nContoh: *${config.prefix}yts tutorial nodejs*`);
+    if (!q) return reply(`Masukkan judul video YouTube!\nContoh: *${config.prefix}yts Denny Caknan*`);
     try {
       const list = await scraper.searchYouTube(q, 5);
       if (list.length === 0) return reply('Video tidak ditemukan.');
@@ -1826,6 +1871,8 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       list.forEach((v, i) => {
         out += `${i + 1}. *${v.title}*\n⏱️ Durasi: ${v.duration} | 👤 Channel: ${v.author}\n🔗 ${v.url}\n\n`;
       });
+      out += `💡 *Tips:* Ketik *${config.prefix}ytm <judul/link>* untuk unduh musik, atau *${config.prefix}play2 <judul/link>* untuk unduh video.`;
+      commandExecutedSuccessfully = true;
       return reply(out.trim());
     } catch (e) {
       return reply(`❌ Error YouTube search: ${e.message}`);

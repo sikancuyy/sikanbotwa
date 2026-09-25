@@ -1777,6 +1777,44 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
+  // 73. Command .ytm & .yts: Validasi fitur YouTube music dan search
+  await itAsync('73. Command .ytm & .yts: Menampilkan panduan YouTube music dan hasil pencarian yts', async () => {
+    processingStatus.resetProcessing();
+    const sentMessages = [];
+
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_RES_YTM' } };
+      },
+      sendPresenceUpdate: async () => {}
+    };
+
+    // 1. .ytm tanpa argumen
+    const mockMsgNoArg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_YTM_EMPTY', fromMe: false },
+      message: { conversation: '.ytm' }
+    };
+    await handleMessage(mockSock, mockMsgNoArg);
+
+    const helpMsg = sentMessages.find((m) => m.content?.text && m.content.text.includes('YouTube Music Downloader'));
+    assert.strictEqual(Boolean(helpMsg), true, 'Harus menampilkan panduan .ytm');
+    assert.strictEqual(helpMsg.content.text.includes('.ytm Denny Caknan'), true);
+
+    // 2. .yts tanpa argumen
+    const mockMsgYtsEmpty = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_YTS_EMPTY', fromMe: false },
+      message: { conversation: '.yts' }
+    };
+    await handleMessage(mockSock, mockMsgYtsEmpty);
+
+    const helpYts = sentMessages.find((m) => m.content?.text && m.content.text.includes('Masukkan judul video YouTube'));
+    assert.strictEqual(Boolean(helpYts), true, 'Harus meminta judul video pada .yts');
+
+    processingStatus.resetProcessing();
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');

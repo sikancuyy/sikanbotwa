@@ -60,7 +60,7 @@ function getDownloadMenu() {
   const p = config.prefix;
   return `╭───〔 📥 DOWNLOAD 〕
 │
-├ ${p}play
+├ ${p}play / ${p}ytm
 ├ ${p}play2
 ├ ${p}yts
 ├ ${p}tt / ${p}tiktok
