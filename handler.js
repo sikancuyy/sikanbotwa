@@ -93,7 +93,7 @@ const VALID_COMMANDS = new Set([
   'tts',
 
   // Tools
-  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf',
+  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'rvo',
 
   // Group Management
   'antilink', 'antispam', 'welcome', 'groupinfo', 'linkgroup', 'revoke',
@@ -124,6 +124,73 @@ async function getMediaBuffer(mediaObj, type) {
   } catch (err) {
     throw new Error('Gagal mengunduh media dari pesan: ' + err.message);
   }
+}
+
+/**
+ * Ekstraksi informasi media View Once dari quoted message Baileys
+ * Mendukung viewOnceMessage, viewOnceMessageV2, viewOnceMessageV2Extension, ephemeral, dan documentWithCaption
+ */
+function extractViewOnceMedia(rawQuoted) {
+  if (!rawQuoted) return null;
+
+  let current = rawQuoted;
+  let isViewOnce = false;
+
+  // Telusuri kemungkinan pembungkus (wrapper)
+  let loopCount = 0;
+  while (loopCount < 6 && current) {
+    loopCount++;
+    if (current.viewOnceMessage) {
+      isViewOnce = true;
+      current = current.viewOnceMessage.message || current.viewOnceMessage;
+    } else if (current.viewOnceMessageV2) {
+      isViewOnce = true;
+      current = current.viewOnceMessageV2.message || current.viewOnceMessageV2;
+    } else if (current.viewOnceMessageV2Extension) {
+      isViewOnce = true;
+      current = current.viewOnceMessageV2Extension.message || current.viewOnceMessageV2Extension;
+    } else if (current.ephemeralMessage?.message) {
+      current = current.ephemeralMessage.message;
+    } else if (current.documentWithCaptionMessage?.message) {
+      current = current.documentWithCaptionMessage.message;
+    } else {
+      break;
+    }
+  }
+
+  const imageMsg = current?.imageMessage;
+  const videoMsg = current?.videoMessage;
+
+  // Cek juga jika ada flag viewOnce: true pada properti media
+  if (imageMsg?.viewOnce || videoMsg?.viewOnce) {
+    isViewOnce = true;
+  }
+
+  if (!isViewOnce) {
+    return { isViewOnce: false };
+  }
+
+  if (imageMsg) {
+    return {
+      isViewOnce: true,
+      mediaType: 'image',
+      mediaObj: imageMsg,
+      caption: imageMsg.caption || '',
+      mimetype: imageMsg.mimetype || 'image/jpeg'
+    };
+  }
+
+  if (videoMsg) {
+    return {
+      isViewOnce: true,
+      mediaType: 'video',
+      mediaObj: videoMsg,
+      caption: videoMsg.caption || '',
+      mimetype: videoMsg.mimetype || 'video/mp4'
+    };
+  }
+
+  return { isViewOnce: true, mediaType: null };
 }
 
 
@@ -296,18 +363,21 @@ async function handleMessage(sock, msg, startTime) {
     );
   }
 
-  // 2. Unwrap Quoted Message
-  let quotedMessage = rawMessage?.extendedTextMessage?.contextInfo?.quotedMessage || null;
+  // 2. Simpan Quoted Message asli sebelum unwrap (untuk fitur seperti RVO View Once)
+  const rawQuotedMessage = rawMessage?.extendedTextMessage?.contextInfo?.quotedMessage || null;
+  let quotedMessage = rawQuotedMessage;
   while (
     quotedMessage?.ephemeralMessage ||
     quotedMessage?.viewOnceMessage ||
     quotedMessage?.viewOnceMessageV2 ||
+    quotedMessage?.viewOnceMessageV2Extension ||
     quotedMessage?.documentWithCaptionMessage
   ) {
     quotedMessage = (
       quotedMessage.ephemeralMessage?.message ||
       quotedMessage.viewOnceMessage?.message ||
       quotedMessage.viewOnceMessageV2?.message ||
+      quotedMessage.viewOnceMessageV2Extension?.message ||
       quotedMessage.documentWithCaptionMessage?.message
     );
   }
@@ -842,6 +912,8 @@ async function handleMessage(sock, msg, startTime) {
     'tr': 'translate',
     'ss': 'ssweb',
     'cuaca': 'weather',
+    'rvo': 'rvo',
+    'viewonce': 'rvo',
     // Group
     'infogc': 'groupinfo',
     'linkgc': 'linkgroup',
@@ -897,7 +969,7 @@ async function handleMessage(sock, msg, startTime) {
     'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly',
     'stickerlysearch', 'telestick', 'tenor', 'stickersearch', 'ryo',
     // Tools
-    'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc',
+    'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc', 'rvo',
     // AI
     'ai', 'ask', 'imagine', 'summarize',
     // TTS
@@ -2603,6 +2675,47 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     } catch (e) {
       return reply(`❌ ${e.message}`);
     }
+  }
+
+  if (command === 'rvo') {
+    if (!rawQuotedMessage) {
+      return reply('❌ Reply foto/video View Once terlebih dahulu.');
+    }
+
+    const vo = extractViewOnceMedia(rawQuotedMessage);
+    if (!vo || !vo.isViewOnce) {
+      return reply('❌ Pesan yang di-reply bukan View Once.');
+    }
+
+    if (!vo.mediaType || !vo.mediaObj) {
+      return reply('❌ Gagal mengambil media View Once.');
+    }
+
+    try {
+      const mediaBuffer = await getMediaBuffer(vo.mediaObj, vo.mediaType);
+      if (!mediaBuffer || mediaBuffer.length === 0) {
+        return reply('❌ Gagal mengambil media View Once.');
+      }
+
+      if (vo.mediaType === 'image') {
+        await sock.sendMessage(chatId, {
+          image: mediaBuffer,
+          caption: vo.caption || undefined
+        }, { quoted: msg });
+      } else if (vo.mediaType === 'video') {
+        await sock.sendMessage(chatId, {
+          video: mediaBuffer,
+          mimetype: vo.mimetype || 'video/mp4',
+          caption: vo.caption || undefined
+        }, { quoted: msg });
+      }
+
+      commandExecutedSuccessfully = true;
+    } catch (err) {
+      console.error('[RVO Error]', err);
+      return reply('❌ Gagal mengambil media View Once.');
+    }
+    return;
   }
 
   /* ====================================================================

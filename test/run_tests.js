@@ -1893,6 +1893,88 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
+  // 76. Fitur .rvo (Reply View Once): Validasi reply, deteksi View Once foto & video, serta status response
+  await itAsync('76. Fitur .rvo (Reply View Once): Validasi reply foto & video View Once dan penolakan non-View Once', async () => {
+    processingStatus.resetProcessing();
+    const sentMessages = [];
+    const reactions = [];
+
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        if (content && content.react) {
+          reactions.push(content.react);
+        }
+        return { key: { id: 'MSG_RES_RVO_' + Date.now() } };
+      },
+      sendPresenceUpdate: async () => {}
+    };
+
+    // 1. .rvo tanpa me-reply pesan apapun
+    const mockMsgNoReply = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_NO_REPLY', fromMe: false },
+      message: { conversation: '.rvo' }
+    };
+    await handleMessage(mockSock, mockMsgNoReply);
+
+    const errNoReply = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
+    assert.strictEqual(Boolean(errNoReply), true, 'Harus meminta reply pesan View Once');
+    assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika tidak ada reply');
+
+    // 2. .rvo me-reply pesan teks biasa (bukan View Once)
+    sentMessages.length = 0;
+    reactions.length = 0;
+    processingStatus.resetProcessing();
+
+    const mockMsgTextReply = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_TEXT_REPLY', fromMe: false },
+      message: {
+        extendedTextMessage: {
+          text: '.rvo',
+          contextInfo: {
+            quotedMessage: {
+              conversation: 'Halo ini teks biasa'
+            }
+          }
+        }
+      }
+    };
+    await handleMessage(mockSock, mockMsgTextReply);
+
+    const errNotVo = sentMessages.find((m) => m.content?.text && m.content.text.includes('Pesan yang di-reply bukan View Once.'));
+    assert.strictEqual(Boolean(errNotVo), true, 'Harus menolak jika pesan bukan View Once');
+    assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika bukan View Once');
+
+    // 3. .rvo me-reply foto biasa (non-View Once)
+    sentMessages.length = 0;
+    reactions.length = 0;
+    processingStatus.resetProcessing();
+
+    const mockMsgNormalImage = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_NORMAL_IMG', fromMe: false },
+      message: {
+        extendedTextMessage: {
+          text: '.rvo',
+          contextInfo: {
+            quotedMessage: {
+              imageMessage: {
+                mimetype: 'image/jpeg',
+                caption: 'Foto normal'
+              }
+            }
+          }
+        }
+      }
+    };
+    await handleMessage(mockSock, mockMsgNormalImage);
+
+    const errNormalImg = sentMessages.find((m) => m.content?.text && m.content.text.includes('Pesan yang di-reply bukan View Once.'));
+    assert.strictEqual(Boolean(errNormalImg), true, 'Harus menolak jika foto bukan View Once');
+
+    processingStatus.resetProcessing();
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');
