@@ -6,10 +6,11 @@ const config = require('../config');
 function getMainCategoryMenu(pushName = 'Kak', isRegistered = false) {
   const p = config.prefix;
   const unregNote = isRegistered ? '' : `\n\n⚠️ Kamu belum terdaftar.\nKetik: \`${p}daftar Nama User - Kota - Umur\``;
+  const displayName = String(pushName || 'Kak').toUpperCase();
 
   return `╭───〔 🤖 SIKANBOT 〕
 │
-│ 👋 Halo ${pushName}!
+│ 👋 Halo ${displayName}!
 │ Selamat datang di ${config.botName}.
 │ Prefix : \`${p}\`
 │
@@ -17,19 +18,22 @@ function getMainCategoryMenu(pushName = 'Kak', isRegistered = false) {
 
 ╭───〔 📚 MENU 〕
 │
-├ ${p}inmenu     → 📚 Menu utama
-├ ${p}indownload → ⬇️ Download
-├ ${p}insearch   → 🔎 Pencarian
-├ ${p}ingame     → 🎮 Game
-├ ${p}ins→ 🖼️ Sticker
-├ ${p}intts      → 🔊 Text To Speech
-├ ${p}inuser     → 👤 Data user
-├ ${p}intools    → 🛠️ Tools
-├ ${p}ingroup    → 👥 Fitur grup
-├ ${p}inadmin    → 👑 Admin grup
-├ ${p}inai       → 🤖 Artificial Intelligence
-├ ${p}ininfo     → ℹ️ Info bot
-├ ${p}inlog      → 📋 Log aktivitas
+├ ${p}inmenu   → 📚 Menu Utama
+├ ${p}indw     → ⬇️ Download
+├ ${p}inscr    → 🔎 Pencarian
+├ ${p}ingm     → 🎮 Game
+├ ${p}ins      → 🖼️ Sticker
+├ ${p}intts    → 🔊 Text To Speech
+│
+├ ${p}inuser   → 👤 Data User
+├ ${p}intl     → 🛠️ Tools
+├ ${p}ingr     → 👥 Fitur Grup
+├ ${p}inadm    → 👑 Admin Grup
+│
+├ ${p}inai     → 🤖 AI
+├ ${p}ininfo   → ℹ️ Info Bot
+└ ${p}inlog    → 📋 Log Aktivitas
+
 ╰────────────────${unregNote}`;
 }
 

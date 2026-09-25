@@ -532,14 +532,15 @@ async function runAllTests() {
     const textReply = replies.find((r) => r.text && r.text.includes('MENU'));
     assert.strictEqual(Boolean(textReply), true);
     assert.strictEqual(textReply.text.includes('.inmenu'), true);
-    assert.strictEqual(textReply.text.includes('.indownload'), true);
-    assert.strictEqual(textReply.text.includes('.ingame'), true);
+    assert.strictEqual(textReply.text.includes('.indw'), true);
+    assert.strictEqual(textReply.text.includes('.inscr'), true);
+    assert.strictEqual(textReply.text.includes('.ingm'), true);
     assert.strictEqual(textReply.text.includes('.ins'), true);
     assert.strictEqual(textReply.text.includes('.intts'), true);
     assert.strictEqual(textReply.text.includes('.inuser'), true);
-    assert.strictEqual(textReply.text.includes('.intools'), true);
-    assert.strictEqual(textReply.text.includes('.ingroup'), true);
-    assert.strictEqual(textReply.text.includes('.inadmin'), true);
+    assert.strictEqual(textReply.text.includes('.intl'), true);
+    assert.strictEqual(textReply.text.includes('.ingr'), true);
+    assert.strictEqual(textReply.text.includes('.inadm'), true);
     assert.strictEqual(textReply.text.includes('.inai'), true);
     assert.strictEqual(textReply.text.includes('.ininfo'), true);
     assert.strictEqual(textReply.text.includes('.inlog'), true);
@@ -871,12 +872,17 @@ async function runAllTests() {
   // 44. Perintah 'in' kurang akurat / typo tetap masuk ke halaman bertingkat yang tepat
   await itAsync('44. Perintah menu bertingkat yang kurang akurat/typo (indown, ingam, insear, intul, ingrup, inadm, in download, in) tetap masuk', async () => {
     const testCases = [
+      { input: '.indw', expectedHeader: 'DOWNLOAD' },
       { input: '.indown', expectedHeader: 'DOWNLOAD' },
       { input: '.indl', expectedHeader: 'DOWNLOAD' },
       { input: '.in download', expectedHeader: 'DOWNLOAD' },
-      { input: '.ingam', expectedHeader: 'GAME & FUN' },
+      { input: '.inscr', expectedHeader: 'SEARCH' },
       { input: '.insear', expectedHeader: 'SEARCH' },
+      { input: '.ingm', expectedHeader: 'GAME & FUN' },
+      { input: '.ingam', expectedHeader: 'GAME & FUN' },
+      { input: '.intl', expectedHeader: 'TOOLS' },
       { input: '.intul', expectedHeader: 'TOOLS' },
+      { input: '.ingr', expectedHeader: 'GROUP' },
       { input: '.ingrup', expectedHeader: 'GROUP' },
       { input: '.inadm', expectedHeader: 'ADMIN' },
       { input: '.in', expectedHeader: 'GENERAL' },

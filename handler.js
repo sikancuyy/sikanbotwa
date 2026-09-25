@@ -42,8 +42,8 @@ const {
 // Daftar seluruh command valid bot
 const VALID_COMMANDS = new Set([
   // Bot Menu Utama & Submenu Kategori
-  'menu', 'help', 'start', 'in', 'ins', 'inmenu', 'indownload', 'insearch', 'ingame',
-  'insticker', 'intts', 'inuser', 'intools', 'ingroup', 'inadmin', 'inai', 'ininfo', 'inlog',
+  'menu', 'help', 'start', 'in', 'ins', 'inmenu', 'indownload', 'indw', 'insearch', 'inscr', 'ingame', 'ingm',
+  'insticker', 'intts', 'inuser', 'intools', 'intl', 'ingroup', 'ingr', 'inadmin', 'inadm', 'inai', 'ininfo', 'inlog',
 
   // Bot Menu & Info
   'ping', 'alive', 'uptime', 'runtime', 'bot', 'infobot',
@@ -176,18 +176,18 @@ function resolveTieredMenu(command, q = '') {
     return 'insticker';
   }
 
-  // 2. Download (.indownload, .indown, .indl, .inunduh, .in download)
-  if (/^(down|dl|unduh)/.test(target)) {
+  // 2. Download (.indownload, .indw, .indown, .indl, .inunduh, .in download)
+  if (/^(dw|down|dl|unduh)/.test(target)) {
     return 'indownload';
   }
 
-  // 3. Search (.insearch, .insear, .incari, .insrch, .in search)
-  if (/^(sear|cari|srch)/.test(target)) {
+  // 3. Search (.insearch, .inscr, .insear, .incari, .insrch, .in search)
+  if (/^(scr|sear|cari|srch)/.test(target)) {
     return 'insearch';
   }
 
-  // 4. Game (.ingame, .ingam, .ingm, .inpermainan, .in game)
-  if (/^(gam|gem|permainan)/.test(target)) {
+  // 4. Game (.ingame, .ingm, .ingam, .inpermainan, .in game)
+  if (/^(gm|gam|gem|permainan)/.test(target)) {
     return 'ingame';
   }
 
@@ -201,13 +201,13 @@ function resolveTieredMenu(command, q = '') {
     return 'inuser';
   }
 
-  // 7. Tools (.intools, .intool, .intul, .inalat, .in tools)
-  if (/^(tool|tul|alat)/.test(target)) {
+  // 7. Tools (.intools, .intl, .intool, .intul, .inalat, .in tools)
+  if (/^(tl|tool|tul|alat)/.test(target)) {
     return 'intools';
   }
 
-  // 8. Group (.ingroup, .ingrup, .ingrp, .ingc, .in group)
-  if (/^(group|grup|grp|gc)/.test(target)) {
+  // 8. Group (.ingroup, .ingr, .ingrup, .ingrp, .ingc, .in group)
+  if (/^(gr|group|grup|grp|gc)/.test(target)) {
     return 'ingroup';
   }
 
