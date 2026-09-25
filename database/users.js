@@ -126,6 +126,30 @@ function initTables() {
     if (!colNames.includes('banned')) {
       db.exec('ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0;');
     }
+    if (!colNames.includes('hits_today')) {
+      db.exec('ALTER TABLE users ADD COLUMN hits_today INTEGER DEFAULT 0;');
+    }
+    if (!colNames.includes('last_reset_date')) {
+      db.exec("ALTER TABLE users ADD COLUMN last_reset_date TEXT DEFAULT '';");
+    }
+    if (!colNames.includes('premium_package')) {
+      db.exec("ALTER TABLE users ADD COLUMN premium_package TEXT DEFAULT '';");
+    }
+    if (!colNames.includes('premium_started_at')) {
+      db.exec('ALTER TABLE users ADD COLUMN premium_started_at INTEGER DEFAULT 0;');
+    }
+    if (!colNames.includes('premium_expires_at')) {
+      db.exec('ALTER TABLE users ADD COLUMN premium_expires_at INTEGER DEFAULT 0;');
+    }
+
+    const guestTableInfo = db.pragma('table_info(guest_limits)');
+    const guestColNames = guestTableInfo.map((c) => c.name);
+    if (!guestColNames.includes('hits_today')) {
+      db.exec('ALTER TABLE guest_limits ADD COLUMN hits_today INTEGER DEFAULT 0;');
+    }
+    if (!guestColNames.includes('last_reset_date')) {
+      db.exec("ALTER TABLE guest_limits ADD COLUMN last_reset_date TEXT DEFAULT '';");
+    }
   } catch (_) {}
 
   // Migrasi guest lama (registered = 0) ke guest_limits dan bersihkan dari tabel users
@@ -311,6 +335,43 @@ function getSmallestAvailableId() {
 }
 
 /**
+ * Mendapatkan string tanggal hari ini dalam format YYYY-MM-DD (Zona Waktu WIB / Asia/Jakarta)
+ */
+function getTodayDateString() {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta' }).format(new Date());
+  } catch (_) {
+    const d = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Menghitung sisa waktu menuju pukul 00:00:00 WIB (tengah malam)
+ * @returns {string} Contoh: "2 jam 15 menit"
+ */
+function getTimeUntilMidnightWib() {
+  try {
+    const now = new Date();
+    const nowWib = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Jakarta' }));
+    const midnight = new Date(nowWib);
+    midnight.setHours(24, 0, 0, 0);
+
+    const diffMs = Math.max(0, midnight.getTime() - nowWib.getTime());
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+
+    if (hours === 0 && minutes === 0) {
+      const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
+      return `${seconds} detik`;
+    }
+    return `${hours} jam ${minutes} menit`;
+  } catch (_) {
+    return 'beberapa jam ke depan';
+  }
+}
+
+/**
  * Helper format tanggal Indonesia (misal: 25 September 2026)
  */
 function formatIndonesianDate(timestamp) {
@@ -329,13 +390,15 @@ function formatIndonesianDate(timestamp) {
 /**
  * Ambil data user dari database.
  * Jika terdaftar: mengembalikan data user + ID unik.
- * Jika belum terdaftar: mengembalikan status guest dengan limit default 50.
+ * Jika belum terdaftar: mengembalikan status guest dengan limit default 10 hit/hari.
  */
 function getUser(rawJid, pushName = '') {
   const db = getDb();
   const jid = normalizeUserJid(rawJid);
   const phone = extractPhone(rawJid);
   if (!phone) return null;
+
+  const todayStr = getTodayDateString();
 
   // 1. Cari di tabel users (terdaftar)
   let user = db.prepare('SELECT * FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
@@ -347,14 +410,38 @@ function getUser(rawJid, pushName = '') {
     const id = getSmallestAvailableId();
     const now = Date.now();
     db.prepare(`
-      INSERT OR REPLACE INTO users (id, phone, jid, name, kota, umur, registered, registered_at, status, limit_val, limit_type, role, unlimited, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'Lhokseumawe', 20, 1, ?, 'Aktif', 50, 'unlimited', 'owner', 1, ?, ?)
-    `).run(id, phone, jid, config.owner.name, now, now, now);
+      INSERT OR REPLACE INTO users (id, phone, jid, name, kota, umur, registered, registered_at, status, limit_val, limit_type, role, unlimited, premium, hits_today, last_reset_date, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'Lhokseumawe', 20, 1, ?, 'Aktif', 30, 'unlimited', 'owner', 1, 1, 0, ?, ?, ?)
+    `).run(id, phone, jid, config.owner.name, now, todayStr, now, now);
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
     return user;
   }
 
   if (user) {
+    const now = Date.now();
+
+    // A. Cek apakah masa aktif Premium sudah kedaluwarsa
+    if (user.premium === 1 && user.premium_expires_at > 0 && now > user.premium_expires_at && !isOwner) {
+      db.prepare(`
+        UPDATE users
+        SET premium = 0, premium_package = '', limit_type = 'limited', unlimited = 0,
+            role = CASE WHEN role = 'Premium' THEN 'User' ELSE role END, updated_at = ?
+        WHERE id = ?
+      `).run(now, user.id);
+      user.premium = 0;
+      user.premium_package = '';
+      user.limit_type = 'limited';
+      user.unlimited = 0;
+      if (user.role === 'Premium') user.role = 'User';
+    }
+
+    // B. Cek reset hit harian (Pukul 00:00 WIB)
+    if (user.last_reset_date !== todayStr) {
+      db.prepare('UPDATE users SET hits_today = 0, last_reset_date = ? WHERE id = ?').run(todayStr, user.id);
+      user.hits_today = 0;
+      user.last_reset_date = todayStr;
+    }
+
     if (isOwner && user.role !== 'owner') {
       user.role = 'owner';
       user.limit_type = 'unlimited';
@@ -365,6 +452,8 @@ function getUser(rawJid, pushName = '') {
       db.prepare('UPDATE users SET name = ?, updated_at = ? WHERE id = ?').run(pushName, Date.now(), user.id);
       user.name = pushName;
     }
+
+    user.limit_val = (user.unlimited === 1 || user.premium === 1 || isOwner) ? Infinity : 30;
     return user;
   }
 
@@ -372,8 +461,12 @@ function getUser(rawJid, pushName = '') {
   let guest = db.prepare('SELECT * FROM guest_limits WHERE phone = ?').get(phone);
   const now = Date.now();
   if (!guest) {
-    db.prepare('INSERT OR IGNORE INTO guest_limits (phone, jid, usage_count, updated_at) VALUES (?, ?, 0, ?)').run(phone, jid, now);
-    guest = { phone, jid, usage_count: 0, updated_at: now };
+    db.prepare('INSERT OR IGNORE INTO guest_limits (phone, jid, usage_count, hits_today, last_reset_date, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(phone, jid, todayStr, now);
+    guest = { phone, jid, usage_count: 0, hits_today: 0, last_reset_date: todayStr, updated_at: now };
+  } else if (guest.last_reset_date !== todayStr) {
+    db.prepare('UPDATE guest_limits SET hits_today = 0, last_reset_date = ? WHERE phone = ?').run(todayStr, phone);
+    guest.hits_today = 0;
+    guest.last_reset_date = todayStr;
   }
 
   return {
@@ -387,10 +480,15 @@ function getUser(rawJid, pushName = '') {
     registered_at: 0,
     status: 'Belum Terdaftar',
     limit_type: 'limited',
-    limit_val: 50,
+    limit_val: 10,
     usage_count: guest.usage_count || 0,
+    hits_today: guest.hits_today || 0,
+    last_reset_date: guest.last_reset_date || todayStr,
     role: 'User',
     premium: 0,
+    premium_package: '',
+    premium_started_at: 0,
+    premium_expires_at: 0,
     unlimited: 0,
     total_commands: guest.total_commands || 0,
     success_commands: guest.success_commands || 0,
@@ -404,12 +502,15 @@ function getUser(rawJid, pushName = '') {
 /**
  * Pendaftaran user baru dengan detail lengkap: Nama, Kota, Umur
  * Menggunakan ID kosong terkecil (smallest available ID) mulai dari 1.
+ * Kuota user terdaftar adalah 30 hit/hari.
  */
 function registerUserWithDetails(rawPhoneOrJid, details = {}) {
   const db = getDb();
   const phone = extractPhone(rawPhoneOrJid);
   const jid = normalizeUserJid(rawPhoneOrJid);
   if (!phone) return null;
+
+  const todayStr = getTodayDateString();
 
   // Cek apakah sudah terdaftar
   let existing = db.prepare('SELECT * FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
@@ -422,14 +523,17 @@ function registerUserWithDetails(rawPhoneOrJid, details = {}) {
   const name = String(details.name || (isOwner ? config.owner.name : 'User')).trim();
   const kota = String(details.kota || '-').trim();
   const umur = parseInt(details.umur, 10) || 0;
-  const role = isOwner ? 'owner' : 'User';
-  const limitType = 'unlimited';
-  const unlimited = 1;
-  const limitVal = 50;
+  const isPrem = existing ? (existing.premium === 1 && (!existing.premium_expires_at || existing.premium_expires_at > now)) : false;
 
-  // Ambil data usage_count sebelumnya dari guest_limits jika ada
-  const guest = db.prepare('SELECT usage_count FROM guest_limits WHERE phone = ?').get(phone);
+  const role = isOwner ? 'owner' : (isPrem ? 'Premium' : 'User');
+  const limitType = (isOwner || isPrem) ? 'unlimited' : 'limited';
+  const unlimited = (isOwner || isPrem) ? 1 : 0;
+  const limitVal = (isOwner || isPrem) ? Infinity : 30; // 30 hit/hari untuk registered
+
+  // Ambil hits_today dan usage_count sebelumnya dari guest_limits jika ada
+  const guest = db.prepare('SELECT usage_count, hits_today, last_reset_date FROM guest_limits WHERE phone = ?').get(phone);
   const usageCount = guest ? (guest.usage_count || 0) : (existing ? (existing.usage_count || 0) : 0);
+  const hitsToday = (guest && guest.last_reset_date === todayStr) ? (guest.hits_today || 0) : (existing && existing.last_reset_date === todayStr ? (existing.hits_today || 0) : 0);
 
   let assignedId;
   if (existing) {
@@ -438,15 +542,15 @@ function registerUserWithDetails(rawPhoneOrJid, details = {}) {
       UPDATE users
       SET id = ?, name = ?, kota = ?, umur = ?, registered = 1, registered_at = ?,
           status = 'Aktif', limit_val = ?, limit_type = ?, role = ?, unlimited = ?,
-          usage_count = ?, updated_at = ?
+          usage_count = ?, hits_today = ?, last_reset_date = ?, updated_at = ?
       WHERE phone = ? OR jid = ?
-    `).run(assignedId, name, kota, umur, now, limitVal, limitType, role, unlimited, usageCount, now, phone, jid);
+    `).run(assignedId, name, kota, umur, now, limitVal, limitType, role, unlimited, usageCount, hitsToday, todayStr, now, phone, jid);
   } else {
     assignedId = getSmallestAvailableId();
     db.prepare(`
-      INSERT INTO users (id, phone, jid, name, kota, umur, registered, registered_at, status, limit_val, limit_type, role, unlimited, usage_count, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'Aktif', ?, ?, ?, ?, ?, ?, ?)
-    `).run(assignedId, phone, jid, name, kota, umur, now, limitVal, limitType, role, unlimited, usageCount, now, now);
+      INSERT INTO users (id, phone, jid, name, kota, umur, registered, registered_at, status, limit_val, limit_type, role, unlimited, usage_count, hits_today, last_reset_date, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'Aktif', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(assignedId, phone, jid, name, kota, umur, now, limitVal, limitType, role, unlimited, usageCount, hitsToday, todayStr, now, now);
   }
 
   // Bersihkan dari guest_limits
@@ -494,40 +598,53 @@ function deleteUserById(id) {
 }
 
 /**
- * Menambah penggunaan limit (increment usage)
+ * Menambah penggunaan limit (increment usage) harian dan total
  */
 function incrementUsage(rawPhoneOrJid, amount = 1) {
   const db = getDb();
   const phone = extractPhone(rawPhoneOrJid);
   const jid = normalizeUserJid(rawPhoneOrJid);
   const now = Date.now();
+  const todayStr = getTodayDateString();
 
-  const user = db.prepare('SELECT id FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
+  const user = db.prepare('SELECT id, hits_today, last_reset_date FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
   if (user) {
-    db.prepare('UPDATE users SET usage_count = usage_count + ?, updated_at = ? WHERE id = ?').run(amount, now, user.id);
-  } else {
+    const hitsToday = (user.last_reset_date === todayStr) ? (user.hits_today || 0) + amount : amount;
     db.prepare(`
-      INSERT INTO guest_limits (phone, jid, usage_count, updated_at)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(phone) DO UPDATE SET usage_count = usage_count + excluded.usage_count, updated_at = excluded.updated_at
-    `).run(phone, jid, amount, now);
+      UPDATE users
+      SET usage_count = usage_count + ?, hits_today = ?, last_reset_date = ?, updated_at = ?
+      WHERE id = ?
+    `).run(amount, hitsToday, todayStr, now, user.id);
+  } else {
+    const guest = db.prepare('SELECT phone, hits_today, last_reset_date FROM guest_limits WHERE phone = ?').get(phone);
+    const hitsToday = (guest && guest.last_reset_date === todayStr) ? (guest.hits_today || 0) + amount : amount;
+    db.prepare(`
+      INSERT INTO guest_limits (phone, jid, usage_count, hits_today, last_reset_date, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(phone) DO UPDATE SET
+        usage_count = usage_count + excluded.usage_count,
+        hits_today = excluded.hits_today,
+        last_reset_date = excluded.last_reset_date,
+        updated_at = excluded.updated_at
+    `).run(phone, jid, amount, hitsToday, todayStr, now);
   }
 }
 
 /**
- * Reset limit penggunaan ke 0
+ * Reset limit penggunaan harian & total ke 0
  */
 function resetLimit(rawPhoneOrJid) {
   const db = getDb();
   const phone = extractPhone(rawPhoneOrJid);
   const jid = normalizeUserJid(rawPhoneOrJid);
   const now = Date.now();
+  const todayStr = getTodayDateString();
 
   const user = db.prepare('SELECT id FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
   if (user) {
-    db.prepare('UPDATE users SET usage_count = 0, updated_at = ? WHERE id = ?').run(now, user.id);
+    db.prepare('UPDATE users SET usage_count = 0, hits_today = 0, last_reset_date = ?, updated_at = ? WHERE id = ?').run(todayStr, now, user.id);
   }
-  db.prepare('UPDATE guest_limits SET usage_count = 0, updated_at = ? WHERE phone = ?').run(now, phone);
+  db.prepare('UPDATE guest_limits SET usage_count = 0, hits_today = 0, last_reset_date = ?, updated_at = ? WHERE phone = ?').run(todayStr, now, phone);
   return true;
 }
 
@@ -545,7 +662,7 @@ function setUnlimited(rawPhoneOrJid) {
 
   const res = db.prepare(`
     UPDATE users
-    SET limit_type = 'unlimited', registered = 1, updated_at = ?
+    SET limit_type = 'unlimited', unlimited = 1, updated_at = ?
     WHERE jid = ? OR phone = ?
   `).run(now, jid, phone);
 
@@ -553,24 +670,120 @@ function setUnlimited(rawPhoneOrJid) {
 }
 
 /**
- * Mengubah status user menjadi Limited (limit 50)
+ * Mengubah status user menjadi Limited
  */
 function setLimit(rawPhoneOrJid) {
   const db = getDb();
   const phone = extractPhone(rawPhoneOrJid);
   const jid = normalizeUserJid(rawPhoneOrJid);
   const now = Date.now();
+  const todayStr = getTodayDateString();
 
   // Pastikan user ada
   getUser(jid);
 
   const res = db.prepare(`
     UPDATE users
-    SET limit_type = 'limited', registered = 0, usage_count = 0, updated_at = ?
+    SET limit_type = 'limited', unlimited = 0, premium = 0, premium_package = '',
+        usage_count = 0, hits_today = 0, last_reset_date = ?, updated_at = ?
     WHERE jid = ? OR phone = ?
-  `).run(now, jid, phone);
+  `).run(todayStr, now, jid, phone);
+
+  db.prepare(`
+    UPDATE guest_limits
+    SET usage_count = 0, hits_today = 0, last_reset_date = ?, updated_at = ?
+    WHERE phone = ?
+  `).run(todayStr, now, phone);
 
   return res.changes > 0;
+}
+
+/**
+ * Tambah user ke status Premium
+ * @param {string} rawPhoneOrJid Nomor atau JID user
+ * @param {string} [packageType='30 Hari'] Nama paket (misal: '7 Hari', '30 Hari')
+ * @param {number} [durationDays=30] Lama durasi dalam hari (7 atau 30)
+ * @returns {object|null}
+ */
+function addPremium(rawPhoneOrJid, packageType = '30 Hari', durationDays = 30) {
+  const db = getDb();
+  const phone = extractPhone(rawPhoneOrJid);
+  const jid = normalizeUserJid(rawPhoneOrJid);
+  if (!phone) return null;
+
+  let user = getUser(jid);
+  const now = Date.now();
+  const days = parseInt(durationDays, 10) || 30;
+  const durationMs = days * 24 * 60 * 60 * 1000;
+  // Perpanjang jika sebelumnya masih aktif
+  const baseTime = (user && user.premium === 1 && user.premium_expires_at > now)
+    ? user.premium_expires_at
+    : now;
+  const expiresAt = baseTime + durationMs;
+  const pkgName = String(packageType || (days === 7 ? '7 Hari' : '30 Hari'));
+
+  if (user && user.id) {
+    db.prepare(`
+      UPDATE users
+      SET premium = 1, premium_package = ?, premium_started_at = ?, premium_expires_at = ?,
+          limit_type = 'unlimited', unlimited = 1,
+          role = CASE WHEN role = 'owner' OR is_admin = 1 THEN role ELSE 'Premium' END,
+          updated_at = ?
+      WHERE id = ?
+    `).run(pkgName, now, expiresAt, now, user.id);
+  } else {
+    const id = getSmallestAvailableId();
+    db.prepare(`
+      INSERT INTO users (id, phone, jid, name, registered, registered_at, status, limit_val, limit_type, role, premium, premium_package, premium_started_at, premium_expires_at, unlimited, created_at, updated_at)
+      VALUES (?, ?, ?, 'User Premium', 1, ?, 'Aktif', 30, 'unlimited', 'Premium', 1, ?, ?, ?, 1, ?, ?)
+    `).run(id, phone, jid, now, pkgName, now, expiresAt, now, now);
+  }
+
+  return getUser(jid);
+}
+
+/**
+ * Hapus status Premium user
+ * @param {string} rawPhoneOrJid
+ * @returns {object|null}
+ */
+function removePremium(rawPhoneOrJid) {
+  const db = getDb();
+  const phone = extractPhone(rawPhoneOrJid);
+  const jid = normalizeUserJid(rawPhoneOrJid);
+  if (!phone) return null;
+
+  const now = Date.now();
+  db.prepare(`
+    UPDATE users
+    SET premium = 0, premium_package = '', premium_started_at = 0, premium_expires_at = 0,
+        limit_type = 'limited', unlimited = 0,
+        role = CASE WHEN role = 'Premium' THEN 'User' ELSE role END,
+        updated_at = ?
+    WHERE phone = ? OR jid = ?
+  `).run(now, phone, jid);
+
+  return getUser(jid);
+}
+
+/**
+ * Ambil daftar user Premium aktif
+ */
+function listPremiumUsers() {
+  const db = getDb();
+  const now = Date.now();
+  const rows = db.prepare('SELECT * FROM users WHERE premium = 1 ORDER BY premium_expires_at ASC').all();
+  return rows.map((u) => {
+    const remainingMs = Math.max(0, (u.premium_expires_at || 0) - now);
+    const remainingDays = Math.ceil(remainingMs / (1000 * 60 * 60 * 24));
+    const hours = Math.floor(remainingMs / (1000 * 60 * 60));
+    return {
+      ...u,
+      remainingDays,
+      remainingHours: hours,
+      isExpired: remainingMs <= 0
+    };
+  });
 }
 
 /**
@@ -625,13 +838,20 @@ function addBotAdmin(rawPhoneOrJid) {
   const jid = normalizeUserJid(rawPhoneOrJid);
   const now = Date.now();
 
-  getUser(jid); // Pastikan record ada
-
-  db.prepare(`
-    UPDATE users 
-    SET is_admin = 1, registered = 1, limit_type = 'unlimited', updated_at = ?
-    WHERE jid = ? OR phone = ?
-  `).run(now, jid, phone);
+  const existing = db.prepare('SELECT id FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
+  if (existing) {
+    db.prepare(`
+      UPDATE users 
+      SET is_admin = 1, registered = 1, limit_type = 'unlimited', unlimited = 1, role = 'admin', updated_at = ?
+      WHERE id = ?
+    `).run(now, existing.id);
+  } else {
+    const id = getSmallestAvailableId();
+    db.prepare(`
+      INSERT INTO users (id, phone, jid, name, registered, registered_at, status, limit_val, limit_type, role, is_admin, unlimited, created_at, updated_at)
+      VALUES (?, ?, ?, 'Admin Bot', 1, ?, 'Aktif', 30, 'unlimited', 'admin', 1, 1, ?, ?)
+    `).run(id, phone, jid, now, now, now);
+  }
 
   return true;
 }
@@ -893,6 +1113,11 @@ module.exports = {
   resetLimit,
   setUnlimited,
   setLimit,
+  addPremium,
+  removePremium,
+  listPremiumUsers,
+  getTodayDateString,
+  getTimeUntilMidnightWib,
   getUserInfo,
   getUsersStats,
   normalizeUserJid,

@@ -63,7 +63,7 @@ const VALID_COMMANDS = new Set([
   'owner', 'script', 'donate', 'groups', 'blocklist', 'stats',
 
   // User & Limit & Database
-  'limit', 'ceklimit', 'me', 'daftar', 'register',
+  'limit', 'ceklimit', 'me', 'daftar', 'register', 'premium', 'sewa', 'sewabot',
 
   // Admin DB & User Management & Logs
   'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit',
@@ -753,6 +753,10 @@ async function handleMessage(sock, msg, startTime) {
     'ceklimit': 'limit',
     'limitgc': 'limit',
     'limitgrup': 'limit',
+    'premium': 'premium',
+    'sewa': 'premium',
+    'sewabot': 'premium',
+    'prem': 'premium',
     // Admin DB & User Management
     'users': 'users',
     'userinfo': 'userinfo',
@@ -814,16 +818,28 @@ async function handleMessage(sock, msg, startTime) {
 
   db.incrementHit();
 
-  // List perintah yang terkena sistem limit pengguna
+  // List seluruh perintah yang terkena sistem limit pengguna harian (hitung hit)
   const LIMITED_COMMANDS = new Set([
-    'play', 'play2', 'tiktok', 'tiktokfoto', 'tiktokstalk', 'ig', 'igstory',
-    'facebook', 'twitter', 'spotify', 'mediafire', 'gdrive', 'gitclone', 'img', 'pinterest',
+    // Download
+    'play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
+    'ig', 'igstory', 'facebook', 'twitter', 'spotify',
+    'mediafire', 'gdrive', 'gitclone', 'img', 'pinterest',
+    // Search
+    'google',
+    // Game & Fun
+    'tictactoe', 'delttt', 'math', 'ppt', 'suit', 'slot', 'casino',
+    'yourmom', 'teri', 'tebakgambar', 'tebakkata', 'coinflip', 'dadu',
+    // Sticker & Media
     'sticker', 'take', 'smaker', 'getsticker', 'emix', 'toimg', 'tovid', 'attp', 'ttp',
     'brat', 'bratcolor', 'brathd', 'bratvid', 'bratvid2', 'brat2', 'brat3', 'anyabrat',
     'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly',
-    'telestick', 'tenor', 'stickersearch', 'ryo',
+    'stickerlysearch', 'telestick', 'tenor', 'stickersearch', 'ryo',
+    // Tools
     'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc',
-    'ai', 'ask', 'imagine', 'summarize', 'tts'
+    // AI
+    'ai', 'ask', 'imagine', 'summarize',
+    // TTS
+    'tts'
   ]);
 
   let commandExecutedSuccessfully = false;
@@ -964,12 +980,30 @@ async function handleMessage(sock, msg, startTime) {
     let role = 'User';
     if (isOwner) role = 'Owner';
     else if (userDb.isBotAdmin(sender)) role = 'Admin Bot';
-    else if (u?.premium === 1) role = 'Premium';
+    else if (u?.premium === 1) role = 'Premium VIP';
 
     const isReg = (u?.registered === 1 || isOwner) ? 'Registered' : 'Not Registered';
     const isPrem = (u?.premium === 1 || isOwner) ? 'Yes' : 'No';
     const isUnlim = (limitCheck.isUnlimited) ? 'Yes' : 'No';
-    const limitDisplay = limitCheck.isUnlimited ? 'Unlimited' : limitCheck.remaining;
+
+    const hitsToday = u?.hits_today || 0;
+    const maxLimit = limitCheck.maxLimit;
+    const limitDisplay = limitCheck.isUnlimited ? 'Unlimited ♾️' : `${hitsToday}/${maxLimit} hit (Sisa: ${limitCheck.remaining})`;
+
+    const timeLeft = userDb.getTimeUntilMidnightWib();
+    const resetDisplay = limitCheck.isUnlimited ? '-' : `${timeLeft.hours}j ${timeLeft.minutes}m (00:00 WIB)`;
+
+    let premPkg = '-';
+    let premExp = '-';
+    if (u?.premium === 1) {
+      premPkg = u.premium_package || 'Premium';
+      if (u.premium_expires_at) {
+        const expDate = new Date(u.premium_expires_at);
+        premExp = expDate.toLocaleDateString('id-ID') + ' ' + expDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+      } else {
+        premExp = 'Permanen';
+      }
+    }
 
     // Pastikan nomor selalu terisi jika tersedia dari senderNumber, data user di database, atau LID mapping
     const resolvedPhone = senderNumber || u?.phone || (sender.includes('@lid') ? userDb.getPhoneByLid(sender) : null);
@@ -984,10 +1018,11 @@ async function handleMessage(sock, msg, startTime) {
 ├ Nomor      : ${phoneDisplay}
 ├ Status     : ${isReg}
 ├ Role       : ${role}
-├ Premium    : ${isPrem}
+├ Premium    : ${isPrem}${u?.premium === 1 ? ` (${premPkg})` : ''}
 ├ Unlimited  : ${isUnlim}
-├ Limit      : ${limitDisplay}
-├ Commands   : ${totalCmds.toLocaleString('id-ID')}
+├ Limit Hari : ${limitDisplay}
+├ Reset Jam  : ${resetDisplay}
+${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${totalCmds.toLocaleString('id-ID')}
 ├ Success    : ${succCmds.toLocaleString('id-ID')}
 ├ Failed     : ${failCmds.toLocaleString('id-ID')}
 ├ First Seen : ${firstSeen}
@@ -1001,6 +1036,27 @@ async function handleMessage(sock, msg, startTime) {
   if (command === 'limit' || command === 'ceklimit') {
     commandExecutedSuccessfully = true;
     return reply(formatUserStatus(sender, isOwner, isGroup));
+  }
+
+  if (command === 'premium' || command === 'sewa' || command === 'sewabot') {
+    commandExecutedSuccessfully = true;
+    const infoPrem = `👑 *PAKET PREMIUM SIKANBOT* 👑\n\n` +
+      `Tingkatkan akun Anda ke *Premium VIP* untuk menikmati akses *UNLIMITED HIT* tanpa batas limit harian ke seluruh fitur bot!\n\n` +
+      `💎 *PILIHAN PAKET:*\n` +
+      `1. *Paket 7 Hari*  : Rp5.000 (Hemat)\n` +
+      `2. *Paket 30 Hari* : Rp10.000 (Terpopuler 🔥)\n\n` +
+      `⚡ *KEUNTUNGAN PREMIUM:*\n` +
+      `• Unlimited Hit harian tanpa batas (Bebas pakai)\n` +
+      `• Akses bebas limit di chat pribadi maupun grup\n` +
+      `• Prioritas antrean eksekusi lebih cepat\n` +
+      `• Badge khusus Premium di profil (*.me*)\n` +
+      `• Dukungan penuh langsung dari Owner\n\n` +
+      `📞 *CARA BERLANGGANAN:*\n` +
+      `Hubungi Owner bot sekarang juga:\n` +
+      `• Ketik: *${config.prefix}owner*\n` +
+      `• WhatsApp: https://wa.me/${config.owner.number.replace(/[^0-9]/g, '')}\n` +
+      `• Nama Owner: *${config.owner.name}*`;
+    return reply(infoPrem);
   }
 
   if (command === 'daftar' || command === 'register') {
@@ -2710,7 +2766,7 @@ async function handleMessage(sock, msg, startTime) {
   /* ====================================================================
    * 8.1. 🗄️ ADMIN USER DATABASE & MANAGEMENT
    * ==================================================================== */
-  if (['addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit'].includes(command)) {
+  if (['addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit', 'addprem', 'delprem', 'listprem'].includes(command)) {
     const isBotAdminUser = isOwner || userDb.isBotAdmin(sender);
 
     // addadmin & deladmin khusus Owner
@@ -2745,6 +2801,92 @@ async function handleMessage(sock, msg, startTime) {
           text += `${i + 1}. ${formatPhoneDisplay(a.phone)} ${a.name ? `(${a.name})` : ''}\n`;
         });
       }
+      commandExecutedSuccessfully = true;
+      return reply(text.trim());
+    }
+
+    if (command === 'addprem') {
+      let target = null;
+      let durArg = '30d';
+
+      const quotedNum = getQuotedPhoneNumber(msg, sock, groupMetadata);
+      if (quotedNum && (!botNumber || quotedNum !== botNumber)) {
+        target = quotedNum;
+        durArg = args[0] || '30d';
+      } else {
+        target = normalizePhoneNumber(args[0]);
+        durArg = args[1] || '30d';
+      }
+
+      if (!target || !isValidPhoneNumber(target)) {
+        return reply(
+          `👑 *PANDUAN MENAMBAH PREMIUM*\n\n` +
+          `Format:\n` +
+          `• Balas pesan user: *${config.prefix}addprem [7d|30d]*\n` +
+          `• Atau ketik nomor: *${config.prefix}addprem <nomor> [7d|30d]*\n\n` +
+          `Pilihan Paket:\n` +
+          `• *7d*  : 7 Hari (Rp5.000)\n` +
+          `• *30d* : 30 Hari (Rp10.000)\n\n` +
+          `Contoh: *${config.prefix}addprem 628123456789 30d*`
+        );
+      }
+
+      const is7Days = /^7d?$|^7hari$/i.test(durArg);
+      const days = is7Days ? 7 : 30;
+      const pkgName = is7Days ? '7 Hari (Rp5.000)' : '30 Hari (Rp10.000)';
+
+      const updated = userDb.addPremium(target, pkgName, days);
+      const expDate = updated?.premium_expires_at ? new Date(updated.premium_expires_at).toLocaleDateString('id-ID') : '-';
+
+      // Kirim notifikasi ucapan ke user
+      try {
+        const targetJid = `${target}@s.whatsapp.net`;
+        await sock.sendMessage(targetJid, {
+          text: `🎉 *SELAMAT! AKUN PREMIUM DIAKTIFKAN* 🎉\n\n` +
+            `Halo kak, akun Anda telah berhasil diupgrade ke *Premium SikanBot* oleh Admin/Owner!\n\n` +
+            `• Paket       : ${pkgName}\n` +
+            `• Durasi      : ${days} Hari\n` +
+            `• Kedaluwarsa : ${expDate}\n` +
+            `• Kuota       : UNLIMITED ♾️ (Bebas limit harian)\n\n` +
+            `Terima kasih telah berlangganan! Selamat menggunakan seluruh fitur bot tanpa batas.`
+        });
+      } catch (_) {}
+
+      commandExecutedSuccessfully = true;
+      return reply(
+        `👑 *BERHASIL MENAMBAHKAN USER PREMIUM*\n\n` +
+        `• Nomor       : ${formatPhoneDisplay(target)}\n` +
+        `• Paket       : ${pkgName}\n` +
+        `• Durasi      : ${days} Hari\n` +
+        `• Kedaluwarsa : ${expDate}\n` +
+        `• Kuota       : Unlimited ♾️\n\n` +
+        `User ini sekarang bebas limit harian.`
+      );
+    }
+
+    if (command === 'delprem') {
+      const target = normalizePhoneNumber(args[0]) || (quoted ? getQuotedPhoneNumber(msg, sock, groupMetadata) : null);
+      if (!target || !isValidPhoneNumber(target)) {
+        return reply(`Masukkan nomor yang dituju atau balas pesan chat user!\nContoh: *${config.prefix}delprem 62822xxx*`);
+      }
+
+      userDb.removePremium(target);
+      commandExecutedSuccessfully = true;
+      return reply(`✅ Berhasil mencabut status Premium dari ${formatPhoneDisplay(target)}. Status akun dikembalikan ke reguler.`);
+    }
+
+    if (command === 'listprem') {
+      const prems = userDb.listPremiumUsers();
+      if (!prems || prems.length === 0) {
+        return reply('👑 *DAFTAR USER PREMIUM*\n\n_Belum ada user premium yang terdaftar._');
+      }
+
+      let text = `👑 *DAFTAR USER PREMIUM (${prems.length})*\n\n`;
+      prems.forEach((p, i) => {
+        const expStr = p.premium_expires_at ? new Date(p.premium_expires_at).toLocaleDateString('id-ID') : '-';
+        text += `${i + 1}. ${p.name || 'User'} (${formatPhoneDisplay(p.phone)})\n`;
+        text += `   └ Paket: ${p.premium_package || '-'} | Sisa: ${p.remainingDays} hari (s/d ${expStr})\n`;
+      });
       commandExecutedSuccessfully = true;
       return reply(text.trim());
     }
@@ -2893,10 +3035,10 @@ async function handleMessage(sock, msg, startTime) {
       }
 
       const registeredDate = userDb.formatIndonesianDate(u.registered_at || u.created_at);
-      const isUnlim = (u.unlimited === 1 || u.limit_type === 'unlimited');
-      const limitVal = isUnlim ? 50 : (u.limit_val || 50);
-      const usage = (u.usage_count || 0);
-      const remainingLimit = isUnlim ? Math.max(0, limitVal - usage) : Math.max(0, limitVal - usage);
+      const isUnlim = (u.unlimited === 1 || u.limit_type === 'unlimited' || u.premium === 1);
+      const maxLimit = isUnlim ? 'Unlimited' : (u.registered === 1 ? 30 : 10);
+      const hitsToday = u.hits_today || 0;
+      const remainingLimit = isUnlim ? 'Unlimited' : Math.max(0, maxLimit - hitsToday);
 
       const card = `👤 *INFORMASI USER*\n\n` +
         `🆔 ID          : ${u.id}\n` +
@@ -2906,8 +3048,9 @@ async function handleMessage(sock, msg, startTime) {
         `📱 Nomor       : ${u.phone}\n` +
         `📅 Terdaftar   : ${registeredDate}\n` +
         `🟢 Status      : ${u.status || 'Aktif'}\n` +
-        `📊 Limit       : ${limitVal}\n` +
-        `📥 Digunakan   : ${usage}\n` +
+        `👑 Premium     : ${u.premium === 1 ? `Ya (${u.premium_package || '-'})` : 'Tidak'}\n` +
+        `📊 Limit Harian: ${maxLimit}\n` +
+        `📥 Hit Hari Ini: ${hitsToday}\n` +
         `📈 Sisa Limit  : ${remainingLimit}`;
 
       commandExecutedSuccessfully = true;
@@ -2928,7 +3071,7 @@ async function handleMessage(sock, msg, startTime) {
         data.users.forEach((u, i) => {
           const num = ((data.page - 1) * data.pageSize) + (i + 1);
           const roleBadge = u.role === 'owner' ? ' [OWNER]' : (u.role === 'admin' ? ' [ADMIN]' : (u.premium ? ' [PREMIUM]' : ''));
-          const limText = (u.unlimited || u.limit_type === 'unlimited') ? 'UNLIMITED' : `LIMIT: ${u.limit ?? 50}`;
+          const limText = (u.unlimited || u.limit_type === 'unlimited' || u.premium) ? 'UNLIMITED' : `HITS: ${u.hits_today || 0}/${u.registered ? 30 : 10}`;
           txt += `├ ${num}. ${u.name || 'User'} (${formatPhoneDisplay(u.phone)})${roleBadge}\n│  └ Status: ${limText} | Cmd: ${u.total_commands || 0}\n`;
         });
         txt += `╰────────────────\n• Total User: ${data.total}\n• Ketik *${config.prefix}listuser ${data.page + 1}* untuk halaman berikutnya.`;
@@ -2961,8 +3104,8 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       const limitCheck = checkUserLimit(info.jid, isOwner, false);
       const isReg = info.registered === 1 ? 'Yes' : 'No';
       const isPrem = info.premium === 1 ? 'Yes' : 'No';
-      const isUnlim = (info.limit_type === 'unlimited' || info.unlimited === 1) ? 'Yes' : 'No';
-      const limitVal = isUnlim === 'Yes' ? 'Unlimited' : limitCheck.remaining;
+      const isUnlim = (info.limit_type === 'unlimited' || info.unlimited === 1 || info.premium === 1) ? 'Yes' : 'No';
+      const limitVal = isUnlim === 'Yes' ? 'Unlimited' : `${info.hits_today || 0}/${limitCheck.maxLimit} (Sisa: ${limitCheck.remaining})`;
       const firstSeen = info.created_at ? new Date(info.created_at).toLocaleDateString('id-ID') : '-';
       const lastSeen = info.updated_at ? new Date(info.updated_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '-';
       const lastCmd = info.last_command ? `.${info.last_command}` : '-';
@@ -2974,9 +3117,9 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
 ├ ID         : ${info.id || '-'}
 ├ Registered : ${isReg}
 ├ Role       : ${info.is_admin ? 'Admin Bot' : (info.role || 'User')}
-├ Premium    : ${isPrem}
+├ Premium    : ${isPrem}${info.premium === 1 ? ` (${info.premium_package || 'Premium'})` : ''}
 ├ Unlimited  : ${isUnlim}
-├ Limit      : ${limitVal}
+├ Limit Hari : ${limitVal}
 ├ Commands   : ${(info.total_commands || 0).toLocaleString('id-ID')}
 ├ Success    : ${(info.success_commands || 0).toLocaleString('id-ID')}
 ├ Failed     : ${(info.failed_commands || 0).toLocaleString('id-ID')}
@@ -3014,7 +3157,7 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       if (!target || !isValidPhoneNumber(target)) return reply(`Masukkan nomor pengguna yang valid atau balas pesan chat user!\nContoh: *${config.prefix}setlimit 62822xxx*`);
       userDb.setLimit(target);
       commandExecutedSuccessfully = true;
-      return reply(`✅ Berhasil mengembalikan status pengguna ${formatPhoneDisplay(target)} menjadi LIMITED (maks 50).`);
+      return reply(`✅ Berhasil mengembalikan status pengguna ${formatPhoneDisplay(target)} menjadi LIMITED (10 hit/hari guest, 30 hit/hari terdaftar).`);
     }
   }
 

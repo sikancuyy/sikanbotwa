@@ -2,68 +2,87 @@ const userDb = require('../database/users');
 const config = require('../config');
 const { normalizeUserNumber, isValidUserNumber } = require('./userHelper');
 
-const MAX_LIMITED_USAGE = 50;
+const UNREGISTERED_DAILY_LIMIT = 10;
+const REGISTERED_DAILY_LIMIT = 30;
 
 /**
  * Cek apakah user berhak menjalankan command berlimit
  * @param {string} jid WhatsApp JID user
  * @param {boolean} isOwner Apakah user adalah owner bot
  * @param {boolean} isGroup Apakah command dijalankan di dalam grup
- * @returns {{ allowed: boolean, isUnlimited: boolean, user: object, remaining: number, message?: string }}
+ * @returns {{ allowed: boolean, isUnlimited: boolean, remaining: number, hitsToday: number, maxLimit: number, user: object, message?: string }}
  */
 function checkUserLimit(jid, isOwner = false, isGroup = false) {
   const isAdmin = isOwner || userDb.isBotAdmin(jid);
 
-  // Penggunaan di dalam grup, Admin Bot, dan Owner selalu UNLIMITED
-  if (isGroup || isAdmin) {
+  // Admin Bot dan Owner selalu memiliki akses penuh dan bebas limit (Unlimited)
+  if (isAdmin) {
     return {
       allowed: true,
       isUnlimited: true,
       remaining: Infinity,
+      hitsToday: 0,
+      maxLimit: Infinity,
       user: null
     };
   }
 
   const cleanPhone = normalizeUserNumber(jid);
-  if (!cleanPhone || !isValidUserNumber(cleanPhone)) {
-    return {
-      allowed: true,
-      isUnlimited: false,
-      remaining: MAX_LIMITED_USAGE,
-      user: null
-    };
-  }
-
   const user = userDb.getUser(jid);
-  if (!user) {
-    return {
-      allowed: true,
-      isUnlimited: false,
-      remaining: MAX_LIMITED_USAGE,
-      user: null
-    };
-  }
 
-  const isUnlimited = user.registered === 1 || user.limit_type === 'unlimited';
-  if (isUnlimited) {
+  // Premium / Unlimited status
+  if (user && (user.premium === 1 || user.unlimited === 1 || user.limit_type === 'unlimited')) {
     return {
       allowed: true,
       isUnlimited: true,
       remaining: Infinity,
+      hitsToday: user.hits_today || 0,
+      maxLimit: Infinity,
       user
     };
   }
 
-  const usage = user.usage_count || 0;
-  const remaining = Math.max(0, MAX_LIMITED_USAGE - usage);
+  // Tentukan batas limit harian berdasarkan status pendaftaran:
+  // - Belum terdaftar: maksimal 10 hit/hari
+  // - Sudah terdaftar: maksimal 30 hit/hari
+  const isRegistered = Boolean(user && user.registered === 1);
+  const maxLimit = isRegistered ? REGISTERED_DAILY_LIMIT : UNREGISTERED_DAILY_LIMIT;
+  const hitsToday = user ? (user.hits_today || 0) : 0;
+  const remaining = Math.max(0, maxLimit - hitsToday);
 
-  if (usage >= MAX_LIMITED_USAGE) {
+  if (hitsToday >= maxLimit) {
+    const timeLeft = userDb.getTimeUntilMidnightWib();
+    const statusLabel = isRegistered ? 'Sudah Terdaftar' : 'Belum Terdaftar';
+
+    let upgradeHint = '';
+    if (!isRegistered) {
+      upgradeHint = `💡 *Tips:* Daftar akun gratis dengan *.daftar <nama>* untuk menaikkan limit harian menjadi *30 hit/hari*!\n\n`;
+    }
+
+    const message =
+      `⚠️ *LIMIT HARIAN TERCAPAI* ⚠️\n\n` +
+      `Halo kak, kuota penggunaan harian kamu telah habis (${hitsToday}/${maxLimit} hit/hari).\n\n` +
+      `📊 *Status Penggunaan:*\n` +
+      `• Status Akun  : ${statusLabel}\n` +
+      `• Kuota Harian : ${maxLimit} hit/hari\n` +
+      `• Terpakai     : ${hitsToday} hit\n` +
+      `• Sisa Kuota   : 0 hit\n` +
+      `• Reset Dalam  : ${timeLeft.hours} jam ${timeLeft.minutes} menit (Pukul 00:00 WIB)\n\n` +
+      `${upgradeHint}` +
+      `👑 *UPGRADE PREMIUM (UNLIMITED HIT)* 👑\n` +
+      `Bebas limit tanpa batas untuk semua fitur bot:\n` +
+      `• *Paket 7 Hari*  : Rp5.000\n` +
+      `• *Paket 30 Hari* : Rp10.000\n\n` +
+      `Hubungi Owner untuk upgrade: Ketik *.owner* atau *.sewa*`;
+
     return {
       allowed: false,
       isUnlimited: false,
       remaining: 0,
+      hitsToday,
+      maxLimit,
       user,
-      message: `Limit penggunaan kamu sudah habis (${usage}/${MAX_LIMITED_USAGE}).\n\nSilakan lengkapi data pengguna (.daftar <nama>) untuk mendapatkan akses unlimited, atau gunakan bot bebas limit di dalam grup.`
+      message
     };
   }
 
@@ -71,25 +90,32 @@ function checkUserLimit(jid, isOwner = false, isGroup = false) {
     allowed: true,
     isUnlimited: false,
     remaining,
+    hitsToday,
+    maxLimit,
     user
   };
 }
 
 /**
- * Mengonsumsi 1 limit setelah command berhasil dieksekusi
+ * Mengonsumsi 1 hit limit setelah command berlimit berhasil dieksekusi
  * @param {string} jid
  * @param {boolean} isOwner
  * @param {boolean} isGroup
  */
 function consumeUserLimit(jid, isOwner = false, isGroup = false) {
-  // Jangan kurangi limit jika command dijalankan di grup, oleh owner, atau admin bot
-  if (isGroup || isOwner || userDb.isBotAdmin(jid)) return;
+  // Owner dan Admin Bot tidak terkena pengurangan limit
+  if (isOwner || userDb.isBotAdmin(jid)) return;
+
   const cleanPhone = normalizeUserNumber(jid);
   if (!cleanPhone || !isValidUserNumber(cleanPhone)) return;
+
   const user = userDb.getUser(jid);
-  if (user && user.registered === 0 && user.limit_type !== 'unlimited') {
-    userDb.incrementUsage(jid, 1);
+  // User Premium / Unlimited tidak mengurangi kuota
+  if (user && (user.premium === 1 || user.unlimited === 1 || user.limit_type === 'unlimited')) {
+    return;
   }
+
+  userDb.incrementUsage(jid, 1);
 }
 
 /**
@@ -99,28 +125,66 @@ function consumeUserLimit(jid, isOwner = false, isGroup = false) {
  * @param {boolean} isGroup
  */
 function formatUserStatus(jid, isOwner = false, isGroup = false) {
+  const isAdmin = isOwner || userDb.isBotAdmin(jid);
+  if (isAdmin) {
+    const roleName = isOwner ? 'Owner' : 'Admin Bot';
+    return (
+      `╭───〔 👤 STATUS LIMIT 〕\n` +
+      `│\n` +
+      `├ Role       : ${roleName}\n` +
+      `├ Akses      : Penuh (Full Access)\n` +
+      `├ Kuota      : Unlimited ♾️\n` +
+      `╰────────────────`
+    );
+  }
+
   const user = userDb.getUser(jid);
-  const isRegistered = user ? Boolean(user.registered) : false;
-  const isUnlimited = isOwner || isRegistered || user?.limit_type === 'unlimited';
+  const isPrem = Boolean(user && user.premium === 1);
+  const isUnlim = isPrem || Boolean(user && (user.unlimited === 1 || user.limit_type === 'unlimited'));
 
-  if (isUnlimited) {
-    const displayName = (user && user.name) ? user.name : (isOwner ? config.owner.name : '-');
-    return `👤 USER STATUS\n\nNama: ${displayName}\nStatus: Unlimited\nPenggunaan: Unlimited`;
+  if (isUnlim) {
+    const pkg = user?.premium_package || 'Custom Unlimited';
+    let expStr = 'Permanen';
+    if (user?.premium_expires_at) {
+      const expDate = new Date(user.premium_expires_at);
+      expStr = expDate.toLocaleDateString('id-ID') + ' ' + expDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+    }
+    return (
+      `╭───〔 👤 STATUS LIMIT 〕\n` +
+      `│\n` +
+      `├ Status     : Premium VIP 👑\n` +
+      `├ Paket      : ${pkg}\n` +
+      `├ Kuota      : Unlimited ♾️\n` +
+      `├ Kedaluwarsa: ${expStr}\n` +
+      `╰────────────────`
+    );
   }
 
-  const displayName = (user && user.name) ? user.name : '-';
-  const usage = user ? (user.usage_count || 0) : 0;
-  const remaining = Math.max(0, MAX_LIMITED_USAGE - usage);
+  const isRegistered = Boolean(user && user.registered === 1);
+  const maxLimit = isRegistered ? REGISTERED_DAILY_LIMIT : UNREGISTERED_DAILY_LIMIT;
+  const hitsToday = user ? (user.hits_today || 0) : 0;
+  const remaining = Math.max(0, maxLimit - hitsToday);
+  const timeLeft = userDb.getTimeUntilMidnightWib();
 
-  if (isGroup) {
-    return `👤 USER STATUS\n\nNama: ${displayName}\nStatus: Limited (Private Chat)\nPenggunaan: ${usage}/${MAX_LIMITED_USAGE}\nSisa di Private Chat: ${remaining}\nAkses Grup: Bebas Limit (Unlimited ♾️)`;
-  }
-
-  return `👤 USER STATUS\n\nNama: ${displayName}\nStatus: Limited\nPenggunaan: ${usage}/${MAX_LIMITED_USAGE}\nSisa: ${remaining}`;
+  return (
+    `╭───〔 👤 STATUS LIMIT 〕\n` +
+    `│\n` +
+    `├ Status     : ${isRegistered ? 'Terdaftar (Registered)' : 'Belum Terdaftar (Guest)'}\n` +
+    `├ Limit Hari : ${hitsToday} / ${maxLimit} hit\n` +
+    `├ Sisa Kuota : ${remaining} hit\n` +
+    `├ Reset Pukul: 00:00 WIB (${timeLeft.hours}j ${timeLeft.minutes}m lagi)\n` +
+    `╰────────────────\n\n` +
+    `✨ *Paket Premium (Unlimited Hit):*\n` +
+    `• Rp5.000 / 7 Hari\n` +
+    `• Rp10.000 / 30 Hari\n` +
+    `Ketik *.sewa* atau *.owner* untuk berlangganan.`
+  );
 }
 
 module.exports = {
-  MAX_LIMITED_USAGE,
+  MAX_LIMITED_USAGE: UNREGISTERED_DAILY_LIMIT,
+  UNREGISTERED_DAILY_LIMIT,
+  REGISTERED_DAILY_LIMIT,
   checkUserLimit,
   consumeUserLimit,
   formatUserStatus

@@ -48,59 +48,78 @@ async function runAllTests() {
   const testPhone = '6289999999999';
 
   // Bersihkan user uji coba jika ada
-  users.setLimit(testPhone);
+  users.deleteUser(testPhone);
+  users.getDb().prepare('DELETE FROM guest_limits WHERE phone = ?').run(testPhone);
+  users.deleteUser('6281299887766');
+  users.getDb().prepare("DELETE FROM lid_mappings WHERE lid LIKE '555444333222111%'").run();
 
-  // 1. User baru menjalankan command => limit 50
-  it('1. User baru mendapatkan kuota 50 dan status limited', () => {
+  // 1. User baru (belum terdaftar) menjalankan command => limit 10 hit/hari
+  it('1. User baru (belum terdaftar) mendapatkan kuota 10 hit/hari dan status limited', () => {
     const status = checkUserLimit(testJid, false);
     assert.strictEqual(status.allowed, true);
     assert.strictEqual(status.isUnlimited, false);
-    assert.strictEqual(status.remaining, 50);
+    assert.strictEqual(status.remaining, 10);
+    assert.strictEqual(status.maxLimit, 10);
   });
 
-  // 2. User menggunakan command => usage_count bertambah
-  it('2. User menggunakan command => usage_count bertambah di database', () => {
+  // 2. User menggunakan command => hits_today bertambah di database
+  it('2. User menggunakan command => hits_today bertambah di database', () => {
     consumeUserLimit(testJid, false);
     const u = users.getUser(testJid);
-    assert.strictEqual(u.usage_count, 1);
+    assert.strictEqual(u.hits_today, 1);
     const status = checkUserLimit(testJid, false);
-    assert.strictEqual(status.remaining, 49);
+    assert.strictEqual(status.remaining, 9);
   });
 
-  // 3. Bot restart => usage_count tetap persistent di SQLite
-  it('3. Persistensi database SQLite: nilai usage_count tersimpan di disk', () => {
-    const freshDb = users.getUserInfo(testPhone);
-    assert.strictEqual(freshDb.usage_count, 1);
+  // 3. Bot restart => hits_today tetap persistent di SQLite
+  it('3. Persistensi database SQLite: nilai hits_today tersimpan di disk', () => {
+    const freshDb = users.getUser(testJid);
+    assert.strictEqual(freshDb.hits_today, 1);
   });
 
-  // 4. User mencapai 50 => command ditolak
-  it('4. User mencapai limit 50 => command ditolak dengan pesan yang sesuai', () => {
-    users.getDb().prepare('UPDATE users SET usage_count = 50 WHERE jid = ?').run(testJid);
+  // 4. User mencapai limit 10 => command ditolak dengan pesan sisa waktu reset & tawaran premium
+  it('4. User mencapai limit 10 => command ditolak dengan pesan sisa waktu reset & tawaran premium', () => {
+    users.getDb().prepare('UPDATE guest_limits SET hits_today = 10 WHERE phone = ?').run(testPhone);
     const status = checkUserLimit(testJid, false);
     assert.strictEqual(status.allowed, false);
     assert.strictEqual(status.remaining, 0);
-    assert.ok(status.message.includes('Limit penggunaan kamu sudah habis (50/50)'));
+    assert.ok(status.message.includes('10/10'));
+    assert.ok(status.message.includes('00:00 WIB'));
+    assert.ok(status.message.includes('UPGRADE PREMIUM'));
+    assert.ok(status.message.includes('Rp5.000') && status.message.includes('Rp10.000'));
   });
 
-  // 5. User daftar => unlimited
-  it('5. User melakukan registrasi (.daftar) => status menjadi UNLIMITED', () => {
+  // 5. User daftar => kuota menjadi 30 hit/hari
+  it('5. User melakukan registrasi (.daftar) => status terdaftar dengan kuota 30 hit/hari', () => {
     users.registerUser(testJid, 'Budi Santoso');
     const u = users.getUser(testJid);
     assert.strictEqual(u.registered, 1);
-    assert.strictEqual(u.limit_type, 'unlimited');
+    assert.strictEqual(u.limit_type, 'limited');
     assert.strictEqual(u.name, 'Budi Santoso');
+
+    users.getDb().prepare('UPDATE users SET hits_today = 0 WHERE jid = ?').run(testJid);
+    const status = checkUserLimit(testJid, false);
+    assert.strictEqual(status.allowed, true);
+    assert.strictEqual(status.isUnlimited, false);
+    assert.strictEqual(status.remaining, 30);
+    assert.strictEqual(status.maxLimit, 30);
+  });
+
+  // 6. User upgrade ke Premium => unlimited & command tidak mengurangi limit
+  it('6. User upgrade ke Premium => status menjadi UNLIMITED dan command tidak mengurangi limit', () => {
+    users.addPremium(testPhone, '30 Hari (Rp10.000)', 30);
+    const u = users.getUser(testJid);
+    assert.strictEqual(u.premium, 1);
+    assert.strictEqual(u.premium_package, '30 Hari (Rp10.000)');
 
     const status = checkUserLimit(testJid, false);
     assert.strictEqual(status.allowed, true);
     assert.strictEqual(status.isUnlimited, true);
     assert.strictEqual(status.remaining, Infinity);
-  });
 
-  // 6. User unlimited => command tidak mengurangi limit
-  it('6. User unlimited menggunakan command => limit tidak berkurang', () => {
-    const before = users.getUser(testJid).usage_count;
+    const before = users.getUser(testJid).hits_today || 0;
     consumeUserLimit(testJid, false);
-    const after = users.getUser(testJid).usage_count;
+    const after = users.getUser(testJid).hits_today || 0;
     assert.strictEqual(after, before);
   });
 
@@ -215,24 +234,27 @@ async function runAllTests() {
     assert.ok(bratWebp.length > 500);
   });
 
-  // 16. Penggunaan di grup (isGroup = true) tetap UNLIMITED
-  it('16. Penggunaan di dalam grup (isGroup = true) tetap UNLIMITED dan tidak memotong kuota', () => {
+  // 16. Pengecekan limit harian berlaku konsisten di semua command yang membutuhkan hit
+  it('16. Pengecekan limit harian berlaku konsisten di semua command yang membutuhkan hit', () => {
     const unregUserJid = '6287777777777@s.whatsapp.net';
-    users.setLimit('6287777777777'); // Set user ke status limited
-    const userObj = users.getUser(unregUserJid);
-    assert.strictEqual(userObj.registered, 0);
+    users.deleteUser('6287777777777');
+    users.getDb().prepare('DELETE FROM guest_limits WHERE phone = ?').run('6287777777777');
 
-    // Di dalam grup (isGroup = true) harus selalu diizinkan dan unlimited
     const statusGroup = checkUserLimit(unregUserJid, false, true);
     assert.strictEqual(statusGroup.allowed, true);
-    assert.strictEqual(statusGroup.isUnlimited, true);
-    assert.strictEqual(statusGroup.remaining, Infinity);
+    assert.strictEqual(statusGroup.isUnlimited, false);
+    assert.strictEqual(statusGroup.remaining, 10);
 
-    // Konsumsi di dalam grup tidak mengurangi usage_count
-    const countBefore = users.getUser(unregUserJid).usage_count;
+    // Konsumsi 1 hit di command
     consumeUserLimit(unregUserJid, false, true);
-    const countAfter = users.getUser(unregUserJid).usage_count;
-    assert.strictEqual(countAfter, countBefore);
+    const u = users.getUser(unregUserJid);
+    assert.strictEqual(u.hits_today, 1);
+
+    // Saat mencapai limit 10, command ditolak
+    users.getDb().prepare('UPDATE guest_limits SET hits_today = 10 WHERE phone = ?').run('6287777777777');
+    const statusBlocked = checkUserLimit(unregUserJid, false, true);
+    assert.strictEqual(statusBlocked.allowed, false);
+    assert.ok(statusBlocked.message.includes('LIMIT HARIAN TERCAPAI'));
   });
 
   // 17. Menambahkan Admin Bot (addBotAdmin)
@@ -1283,6 +1305,7 @@ async function runAllTests() {
     assert.strictEqual(isValidPhoneNumber('1203630283928192'), false);
 
     // LID tanpa mapping TIDAK BOLEH diambil angkanya
+    users.getDb().prepare("DELETE FROM lid_mappings WHERE lid LIKE '%555444333222111%'").run();
     assert.strictEqual(getRealPhoneNumber('555444333222111@lid'), null);
     assert.strictEqual(normalizePhoneNumber('555444333222111@lid'), null);
 
@@ -1373,6 +1396,8 @@ async function runAllTests() {
     };
 
     const lidTest = '555444333222111@lid';
+    users.deleteUser('6281299887766');
+    users.getDb().prepare("DELETE FROM lid_mappings WHERE lid LIKE '%555444333222111%'").run();
     // User baru belum terdaftar dan mengirim pendaftaran dengan nomor manual
     const msgDaftar = {
       key: {
@@ -1449,6 +1474,123 @@ async function runAllTests() {
 
     const resolved = resolveLidToPhone('9988776655443322@lid');
     assert.strictEqual(resolved, '6281234445556');
+  });
+
+  // 63. Paket Premium Rp5.000 / 7 hari & Rp10.000 / 30 hari tersimpan di database
+  it('63. Paket Premium Rp5.000 / 7 hari & Rp10.000 / 30 hari tersimpan di database dengan durasi dan tanggal kedaluwarsa', () => {
+    const prem7Phone = '6281234500007';
+    const prem7Jid = `${prem7Phone}@s.whatsapp.net`;
+    const prem30Phone = '6281234500030';
+    const prem30Jid = `${prem30Phone}@s.whatsapp.net`;
+
+    // Tambah paket 7 hari
+    users.addPremium(prem7Phone, '7 Hari (Rp5.000)', 7);
+    const u7 = users.getUser(prem7Jid);
+    assert.strictEqual(u7.premium, 1);
+    assert.strictEqual(u7.premium_package, '7 Hari (Rp5.000)');
+    assert.ok(u7.premium_started_at > 0);
+    assert.ok(u7.premium_expires_at > u7.premium_started_at);
+    assert.strictEqual(checkUserLimit(prem7Jid).isUnlimited, true);
+
+    // Tambah paket 30 hari
+    users.addPremium(prem30Phone, '30 Hari (Rp10.000)', 30);
+    const u30 = users.getUser(prem30Jid);
+    assert.strictEqual(u30.premium, 1);
+    assert.strictEqual(u30.premium_package, '30 Hari (Rp10.000)');
+    assert.ok(u30.premium_expires_at > u30.premium_started_at);
+    assert.strictEqual(checkUserLimit(prem30Jid).isUnlimited, true);
+
+    // Daftar premium muncul di listPremiumUsers
+    const premList = users.listPremiumUsers();
+    assert.ok(premList.some((p) => p.phone === prem7Phone));
+    assert.ok(premList.some((p) => p.phone === prem30Phone));
+  });
+
+  // 64. Admin Bot memiliki akses penuh hampir setara owner dan bebas limit
+  it('64. Admin Bot memiliki akses penuh hampir setara owner dan bebas limit', () => {
+    const botAdminPhone = '6285555555555';
+    const botAdminJid = `${botAdminPhone}@s.whatsapp.net`;
+    users.addBotAdmin(botAdminPhone);
+
+    assert.strictEqual(users.isBotAdmin(botAdminJid), true);
+    const limitStatus = checkUserLimit(botAdminJid, false, false);
+    assert.strictEqual(limitStatus.allowed, true);
+    assert.strictEqual(limitStatus.isUnlimited, true);
+    assert.strictEqual(limitStatus.remaining, Infinity);
+
+    // Admin Bot dapat menambahkan dan mencabut user premium
+    const clientPhone = '6283333333333';
+    users.addPremium(clientPhone, '7 Hari (Rp5.000)', 7);
+    assert.strictEqual(users.getUser(`${clientPhone}@s.whatsapp.net`).premium, 1);
+
+    users.removePremium(clientPhone);
+    assert.strictEqual(users.getUser(`${clientPhone}@s.whatsapp.net`).premium, 0);
+  });
+
+  // 65. Otomatis reset hit harian saat tanggal WIB berganti
+  it('65. Otomatis reset hit harian saat pergantian hari di database (last_reset_date !== todayStr)', () => {
+    const userPhone = '6287712345678';
+    const userJid = `${userPhone}@s.whatsapp.net`;
+    users.registerUser(userJid, 'User Reset Test');
+
+    // Simulasikan penggunaan kemarin
+    users.getDb().prepare("UPDATE users SET hits_today = 30, last_reset_date = '2020-01-01' WHERE phone = ?").run(userPhone);
+
+    // Saat user berinteraksi hari ini, hits_today otomatis kembali ke 0
+    const refreshed = users.getUser(userJid);
+    assert.strictEqual(refreshed.hits_today, 0);
+    assert.strictEqual(refreshed.last_reset_date, users.getTodayDateString());
+
+    const limitCheck = checkUserLimit(userJid, false);
+    assert.strictEqual(limitCheck.allowed, true);
+    assert.strictEqual(limitCheck.remaining, 30);
+  });
+
+  // 66. Otomatis kedaluwarsa status premium setelah waktu expired terlewati
+  it('66. Otomatis mencabut status premium setelah masa aktif expired terlewati', () => {
+    const expPhone = '6287799990000';
+    const expJid = `${expPhone}@s.whatsapp.net`;
+    users.registerUser(expJid, 'User Expired Test');
+
+    // Set premium sudah kedaluwarsa di masa lalu
+    const pastTime = Date.now() - 10000;
+    users.getDb().prepare('UPDATE users SET premium = 1, premium_expires_at = ? WHERE phone = ?').run(pastTime, expPhone);
+
+    // Saat di-fetch, status premium otomatis di-expire menjadi regular (0)
+    const refreshed = users.getUser(expJid);
+    assert.strictEqual(refreshed.premium, 0);
+    assert.strictEqual(refreshed.limit_type, 'limited');
+    assert.strictEqual(refreshed.unlimited, 0);
+
+    const checkLimit = checkUserLimit(expJid, false);
+    assert.strictEqual(checkLimit.isUnlimited, false);
+    assert.strictEqual(checkLimit.maxLimit, 30);
+  });
+
+  // 67. Command .premium / .sewa menampilkan informasi paket Rp5.000 / 7 hari & Rp10.000 / 30 hari
+  await itAsync('67. Command .premium dan .sewa menampilkan harga paket premium dan kontak owner', async () => {
+    const sentMessages = [];
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_PREM_' + Date.now() } };
+      }
+    };
+
+    const msgPrem = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', fromMe: false },
+      message: { conversation: '.premium' }
+    };
+
+    await handleMessage(mockSock, msgPrem);
+    const replyMsg = sentMessages.find((m) => m.content && m.content.text && m.content.text.includes('PAKET PREMIUM'));
+    assert.strictEqual(Boolean(replyMsg), true);
+    assert.strictEqual(replyMsg.content.text.includes('Rp5.000'), true);
+    assert.strictEqual(replyMsg.content.text.includes('7 Hari'), true);
+    assert.strictEqual(replyMsg.content.text.includes('Rp10.000'), true);
+    assert.strictEqual(replyMsg.content.text.includes('30 Hari'), true);
+    assert.strictEqual(replyMsg.content.text.includes('UNLIMITED HIT'), true);
   });
 
   console.log('\n====================================================');
