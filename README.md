@@ -51,30 +51,23 @@ Bot WhatsApp serbaguna, lengkap, dan modular yang dibangun dengan Node.js, Baile
 
 ╭───〔 📥 DOWNLOAD 〕
 │
-├ .play
-├ .play2
-├ .yts
+├ .play / .ytm (unduh musik YouTube)
+├ .play2 (unduh video YouTube)
+├ .yts (cari video YouTube)
 ├ .tt / .tiktok (video & slide foto)
 ├ .ttfoto / .tiktokfoto
+├ .ttmusik / .ttm / .ttmp3 (unduh audio TikTok)
 ├ .tiktokstalk
 ├ .ig / .reel (video, foto, carousel)
 ├ .igstory / .story (unduh story IG)
-├ .facebook
 ├ .twitter
-├ .spotify
-├ .mediafire
-├ .gdrive
 ├ .gitclone
-├ .pinterest
-├ .img
 ╰──────────────
 
 ╭───〔 🔎 SEARCH 〕
 │
 ├ .google
 ├ .yts
-├ .img
-├ .pinterest
 ╰──────────────
 
 ╭───〔 🎮 GAME & FUN 〕
@@ -105,6 +98,7 @@ Bot WhatsApp serbaguna, lengkap, dan modular yang dibangun dengan Node.js, Baile
 ├ .tovid
 ├ .attp
 ├ .brat
+├ .bratpc (stiker Windows Media Player)
 ╰──────────────
 
 ╭───〔 🛠️ TOOLS 〕

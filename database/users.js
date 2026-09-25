@@ -1023,7 +1023,7 @@ function getErrorLogs(limit = 10) {
  */
 function getDownloadLogs(limit = 10) {
   const db = getDb();
-  const dlCommands = ['play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk', 'ig', 'igstory', 'facebook', 'twitter', 'spotify', 'mediafire', 'gdrive', 'gitclone', 'pinterest', 'img'];
+  const dlCommands = ['play', 'play2', 'ytm', 'ytmp3', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk', 'tiktokmusic', 'ttmusik', 'ttm', 'ig', 'igstory', 'twitter', 'gitclone'];
   const placeholders = dlCommands.map(() => '?').join(',');
   return db.prepare(`SELECT * FROM command_logs WHERE command IN (${placeholders}) ORDER BY id DESC LIMIT ?`).all(...dlCommands, limit);
 }
@@ -1046,10 +1046,10 @@ function getBotStats(uptimeFormatted = '0m', groupCount = 0) {
   const successCommands = db.prepare("SELECT COUNT(*) as c FROM command_logs WHERE status = 'SUCCESS'").get().c;
   const failedCommands = db.prepare("SELECT COUNT(*) as c FROM command_logs WHERE status = 'FAILED'").get().c;
 
-  const dlCommands = ['play', 'play2', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk', 'ig', 'igstory', 'facebook', 'twitter', 'spotify', 'mediafire', 'gdrive', 'gitclone', 'pinterest', 'img'];
+  const dlCommands = ['play', 'play2', 'ytm', 'ytmp3', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk', 'tiktokmusic', 'ttmusik', 'ttm', 'ig', 'igstory', 'twitter', 'gitclone'];
   const totalDownloads = db.prepare(`SELECT COUNT(*) as c FROM command_logs WHERE command IN (${dlCommands.map(() => '?').join(',')})`).get(...dlCommands).c;
 
-  const stkCommands = ['sticker', 'take', 'smaker', 'getsticker', 'emix', 'toimg', 'tovid', 'attp', 'ttp', 'brat', 'bratcolor', 'brathd', 'bratvid', 'bratvid2', 'brat2', 'brat3', 'anyabrat', 'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly', 'stickerlysearch', 'telestick', 'tenor', 'stickersearch', 'ryo'];
+  const stkCommands = ['sticker', 'take', 'smaker', 'getsticker', 'emix', 'toimg', 'tovid', 'attp', 'ttp', 'brat', 'bratpc', 'bratcolor', 'brathd', 'bratvid', 'bratvid2', 'brat2', 'brat3', 'anyabrat', 'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly', 'stickerlysearch', 'telestick', 'tenor', 'stickersearch', 'ryo'];
   const totalStickers = db.prepare(`SELECT COUNT(*) as c FROM command_logs WHERE command IN (${stkCommands.map(() => '?').join(',')})`).get(...stkCommands).c;
 
   const ttsCommands = ['tts', 'say', 'tiktoktts'];

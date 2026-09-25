@@ -1815,6 +1815,84 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
+  // 74. Command .ttm (TikTok musik alias) & validasi penghapusan command usang (.facebook, .spotify, dll)
+  await itAsync('74. Command .ttm & verifikasi penghapusan command usang (.facebook, .spotify, .mediafire, .gdrive, .pinterest, .img)', async () => {
+    processingStatus.resetProcessing();
+    const sentMessages = [];
+
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_RES_TTM' } };
+      },
+      sendPresenceUpdate: async () => {}
+    };
+
+    // 1. .ttm tanpa argumen memicu pesan panduan TikTok Music
+    const mockMsgTtm = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_TTM_EMPTY', fromMe: false },
+      message: { conversation: '.ttm' }
+    };
+    await handleMessage(mockSock, mockMsgTtm);
+
+    const helpMsgTtm = sentMessages.find((m) => m.content?.text && m.content.text.includes('TikTok Music Downloader'));
+    assert.strictEqual(Boolean(helpMsgTtm), true, 'Harus menampilkan panduan TikTok Music via .ttm');
+
+    // 2. Command yang dihilangkan tidak boleh dieksekusi sama sekali (VALID_COMMANDS return)
+    sentMessages.length = 0;
+    const removedCommands = ['.facebook', '.spotify', '.mediafire', '.gdrive', '.pinterest', '.img'];
+    for (const cmd of removedCommands) {
+      await handleMessage(mockSock, {
+        key: { remoteJid: '6281234567890@s.whatsapp.net', id: `MSG_${cmd}`, fromMe: false },
+        message: { conversation: cmd }
+      });
+    }
+    assert.strictEqual(sentMessages.length, 0, 'Command yang dihilangkan tidak boleh mengirim respons apapun');
+
+    processingStatus.resetProcessing();
+  });
+
+  // 75. Command .bratpc (Stiker meme Windows Media Player klasik)
+  await itAsync('75. Command .bratpc: Menghasilkan stiker meme Windows Media Player klasik', async () => {
+    processingStatus.resetProcessing();
+    const sentMessages = [];
+
+    const mockSock = {
+      user: { id: '6282277256004:1@s.whatsapp.net' },
+      sendMessage: async (chat, content) => {
+        sentMessages.push({ chat, content });
+        return { key: { id: 'MSG_RES_BRATPC' } };
+      },
+      sendPresenceUpdate: async () => {}
+    };
+
+    // 1. .bratpc tanpa argumen menampilkan panduan
+    const mockMsgEmpty = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_BRATPC_EMPTY', fromMe: false },
+      message: { conversation: '.bratpc' }
+    };
+    await handleMessage(mockSock, mockMsgEmpty);
+
+    const helpMsg = sentMessages.find((m) => m.content?.text && m.content.text.includes('Brat PC Windows Media Player'));
+    assert.strictEqual(Boolean(helpMsg), true, 'Harus menampilkan panduan jika teks kosong');
+
+    // 2. .bratpc dengan teks menghasilkan stiker webp
+    sentMessages.length = 0;
+    const mockMsgWithText = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_BRATPC_EXEC', fromMe: false },
+      message: { conversation: '.bratpc emang BOT nya bisa apa..' }
+    };
+    await handleMessage(mockSock, mockMsgWithText);
+
+    const stickerMsg = sentMessages.find((m) => m.content?.sticker);
+    assert.strictEqual(Boolean(stickerMsg), true, 'Harus mengirim stiker webp');
+    assert.strictEqual(Buffer.isBuffer(stickerMsg.content.sticker), true, 'Stiker harus berupa Buffer');
+    assert.strictEqual(stickerMsg.content.sticker.length > 1000, true, 'Ukuran buffer stiker harus valid');
+
+    processingStatus.resetProcessing();
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');

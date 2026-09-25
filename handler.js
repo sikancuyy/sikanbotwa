@@ -13,7 +13,7 @@ const { downloadVideo, downloadAudio } = require('./downloader');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
 const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage, groupCache, getGroupMetadataSafe } = require('./helpers/group');
 const { generateTTS, convertToVoiceNote, cleanTempAudio } = require('./helpers/tts');
-const { generateQuoteChat, generateBratCustom, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
+const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const {
   startProcessing,
   stopProcessing,
@@ -72,9 +72,8 @@ const VALID_COMMANDS = new Set([
 
   // Download
   'play', 'play2', 'ytm', 'ytmp3', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
-  'tiktokmusic', 'tiktokmusik', 'ttmusik', 'ttmusic', 'ttmp3', 'tiktokmp3',
-  'ig', 'igstory', 'facebook', 'twitter', 'spotify',
-  'mediafire', 'gdrive', 'gitclone', 'pinterest', 'img',
+  'tiktokmusic', 'tiktokmusik', 'ttmusik', 'ttmusic', 'ttmp3', 'tiktokmp3', 'ttm',
+  'ig', 'igstory', 'twitter', 'gitclone',
 
   // Search
   'google',
@@ -85,7 +84,7 @@ const VALID_COMMANDS = new Set([
 
   // Sticker & Media
   'sticker', 'take', 'smaker', 'getsticker', 'emix', 'toimg', 'tovid',
-  'attp', 'ttp', 'brat', 'bratcolor', 'brathd', 'bratvid', 'bratvid2',
+  'attp', 'ttp', 'brat', 'bratpc', 'bratcolor', 'brathd', 'bratvid', 'bratvid2',
   'brat2', 'brat3', 'anyabrat', 'animebrat', 'animebrat2', 'qc', 'qc2',
   'smeme', 'emojigif', 'gifsticker', 'stly', 'stickerlysearch',
   'telestick', 'tenor', 'stickersearch', 'ryo',
@@ -737,6 +736,7 @@ async function handleMessage(sock, msg, startTime) {
     'tiktokslide': 'tiktok',
     'ttstalk': 'tiktokstalk',
     'stalktt': 'tiktokstalk',
+    'ttm': 'tiktokmusic',
     'ttmusik': 'tiktokmusic',
     'ttmusic': 'tiktokmusic',
     'tiktokmusik': 'tiktokmusic',
@@ -759,14 +759,9 @@ async function handleMessage(sock, msg, startTime) {
     'storyig': 'igstory',
     'igs': 'igstory',
     'instastory': 'igstory',
-    'fb': 'facebook',
     'tw': 'twitter',
     'x': 'twitter',
-    'pin': 'pinterest',
-    'mf': 'mediafire',
-    'gd': 'gdrive',
     'git': 'gitclone',
-    'image': 'img',
     // Search
     'g': 'google',
     // Game
@@ -784,6 +779,8 @@ async function handleMessage(sock, msg, startTime) {
     'bratgif': 'bratvid',
     'bratv': 'bratvid',
     'bratanim': 'bratvid',
+    'bratpc': 'bratpc',
+    'pcbrat': 'bratpc',
     'anyabrat': 'anyabrat',
     'anyabr': 'anyabrat',
     'bratcolor': 'bratcolor',
@@ -887,9 +884,8 @@ async function handleMessage(sock, msg, startTime) {
   const LIMITED_COMMANDS = new Set([
     // Download
     'play', 'play2', 'ytm', 'ytmp3', 'yts', 'tiktok', 'tiktokfoto', 'tiktokstalk',
-    'tiktokmusic', 'ttmusik',
-    'ig', 'igstory', 'facebook', 'twitter', 'spotify',
-    'mediafire', 'gdrive', 'gitclone', 'img', 'pinterest',
+    'tiktokmusic', 'ttmusik', 'ttm',
+    'ig', 'igstory', 'twitter', 'gitclone',
     // Search
     'google',
     // Game & Fun
@@ -897,7 +893,7 @@ async function handleMessage(sock, msg, startTime) {
     'yourmom', 'teri', 'tebakgambar', 'tebakkata', 'coinflip', 'dadu',
     // Sticker & Media
     'sticker', 'take', 'smaker', 'getsticker', 'emix', 'toimg', 'tovid', 'attp', 'ttp',
-    'brat', 'bratcolor', 'brathd', 'bratvid', 'bratvid2', 'brat2', 'brat3', 'anyabrat',
+    'brat', 'bratpc', 'bratcolor', 'brathd', 'bratvid', 'bratvid2', 'brat2', 'brat3', 'anyabrat',
     'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly',
     'stickerlysearch', 'telestick', 'tenor', 'stickersearch', 'ryo',
     // Tools
@@ -1718,9 +1714,9 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     return;
   }
 
-  if (command === 'facebook' || command === 'twitter') {
-    if (!q) return reply(`Masukkan URL ${command}!\nContoh: *${config.prefix}${command} https://...*`);
-    const reqId = `${command}_${Date.now()}`;
+  if (command === 'twitter') {
+    if (!q) return reply(`Masukkan URL Twitter/X!\nContoh: *${config.prefix}twitter https://twitter.com/...*`);
+    const reqId = `twitter_${Date.now()}`;
     try {
       const res = await downloadVideo(q, reqId);
       const videoBuff = fs.readFileSync(res.filePath);
@@ -1729,53 +1725,11 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
         caption: `🎥 *${res.title}*\n📦 Ukuran: ${formatBytes(res.fileSize)}`
       }, { quoted: msg });
       deleteFileSafe(res.filePath);
+      commandExecutedSuccessfully = true;
     } catch (err) {
       reply(`❌ Gagal mengunduh: ${err.message}`);
     }
     return;
-  }
-
-  if (command === 'spotify') {
-    if (!q) return reply(`Masukkan judul lagu Spotify!\nContoh: *${config.prefix}spotify Nadin Amizah Rayuan Perempuan Gila*`);
-    const tempAudio = path.join(config.tempDir, `spotify_${Date.now()}.mp3`);
-    try {
-      const dlRes = await scraper.downloadYouTubeAudio(q, tempAudio);
-      if (dlRes.success && fs.existsSync(tempAudio)) {
-        const audioBuffer = fs.readFileSync(tempAudio);
-        await sock.sendMessage(chatId, {
-          audio: audioBuffer,
-          mimetype: 'audio/mpeg',
-          ptt: false
-        }, { quoted: msg });
-        deleteFileSafe(tempAudio);
-      } else {
-        reply('❌ Gagal mengunduh lagu.');
-      }
-    } catch (e) {
-      deleteFileSafe(tempAudio);
-      reply(`❌ Error: ${e.message}`);
-    }
-    return;
-  }
-
-  if (command === 'mediafire') {
-    if (!q) return reply(`Masukkan link Mediafire!\nContoh: *${config.prefix}mediafire https://www.mediafire.com/file/...*`);
-    try {
-      const mf = await scraper.getMediafire(q);
-      reply(`📁 *MEDIAFIRE DOWNLOADER*\n\n• *Nama:* ${mf.filename}\n• *Ukuran:* ${mf.size}\n• *Link Unduh Langsung:* ${mf.downloadUrl}`);
-    } catch (e) {
-      reply(`❌ Gagal: ${e.message}`);
-    }
-    return;
-  }
-
-  if (command === 'gdrive') {
-    if (!q) return reply(`Masukkan link Google Drive!\nContoh: *${config.prefix}gdrive https://drive.google.com/file/d/.../view*`);
-    const match = q.match(/\/d\/([a-zA-Z0-9_-]+)/);
-    if (!match) return reply('❌ Link Google Drive tidak valid.');
-    const fileId = match[1];
-    const directUrl = `https://drive.google.com/uc?export=download&id=${fileId}`;
-    return reply(`📁 *GOOGLE DRIVE DOWNLOADER*\n\n• *ID File:* ${fileId}\n• *Direct Download:* ${directUrl}`);
   }
 
   if (command === 'gitclone') {
@@ -1800,46 +1754,9 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
         mimetype: 'application/zip',
         caption: `📦 *GitHub Repository:* ${repoData.user}/${repoData.repo}\n📦 Ukuran: ${formatBytes(zipBuffer.length)}`
       }, { quoted: msg });
+      commandExecutedSuccessfully = true;
     } catch (e) {
       reply(`❌ Gagal mengunduh repo: ${e.message}`);
-    }
-    return;
-  }
-
-  if (command === 'pinterest') {
-    if (!q) return reply(`Masukkan kata kunci atau link Pinterest!\nContoh: *${config.prefix}pinterest anime aesthetic*`);
-    try {
-      const pins = await scraper.searchPinterest(q);
-      if (pins.length > 0) {
-        const chosen = pins[Math.floor(Math.random() * Math.min(pins.length, 5))];
-        await sock.sendMessage(chatId, {
-          image: { url: chosen.image },
-          caption: `📌 *Pinterest:* ${chosen.title}`
-        }, { quoted: msg });
-      } else {
-        reply('❌ Gambar tidak ditemukan.');
-      }
-    } catch (e) {
-      reply(`❌ Error Pinterest: ${e.message}`);
-    }
-    return;
-  }
-
-  if (command === 'img') {
-    if (!q) return reply(`Masukkan kata kunci pencarian gambar!\nContoh: *${config.prefix}img mobil sport*`);
-    try {
-      const list = await scraper.searchImages(q);
-      if (list.length > 0) {
-        const item = list[0];
-        await sock.sendMessage(chatId, {
-          image: { url: item.image },
-          caption: `🖼️ *Gambar:* ${item.title}`
-        }, { quoted: msg });
-      } else {
-        reply('❌ Gambar tidak ditemukan.');
-      }
-    } catch (e) {
-      reply(`❌ Error gambar: ${e.message}`);
     }
     return;
   }
@@ -2183,6 +2100,27 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       await sock.sendMessage(chatId, { sticker: bratSticker }, { quoted: msg });
     } catch (e) {
       reply(`❌ Gagal membuat stiker brat animasi: ${e.message}`);
+    }
+    return;
+  }
+
+  if (command === 'bratpc') {
+    let textInput = q;
+    if (!textInput && quotedMessage) {
+      textInput = quotedMessage?.conversation ||
+                  quotedMessage?.extendedTextMessage?.text ||
+                  quotedMessage?.imageMessage?.caption ||
+                  quotedMessage?.videoMessage?.caption || '';
+    }
+    if (!textInput) {
+      return reply(`Masukkan teks stiker Brat PC Windows Media Player!\nContoh: *${config.prefix}bratpc emang BOT nya bisa apa..*`);
+    }
+    try {
+      const stk = await generateBratPc(textInput, config.sticker.packname, config.sticker.author);
+      commandExecutedSuccessfully = true;
+      await sock.sendMessage(chatId, { sticker: stk }, { quoted: msg });
+    } catch (e) {
+      reply(`❌ Gagal membuat stiker Brat PC: ${e.message}`);
     }
     return;
   }

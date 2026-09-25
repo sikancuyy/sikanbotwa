@@ -65,18 +65,12 @@ function getDownloadMenu() {
 ├ ${p}yts
 ├ ${p}tt / ${p}tiktok
 ├ ${p}ttfoto / ${p}tiktokfoto
-├ ${p}ttmusik / ${p}ttmp3
+├ ${p}ttmusik / ${p}ttm / ${p}ttmp3
 ├ ${p}tiktokstalk
 ├ ${p}ig / ${p}reel
 ├ ${p}igstory / ${p}story
-├ ${p}facebook
 ├ ${p}twitter
-├ ${p}spotify
-├ ${p}mediafire
-├ ${p}gdrive
 ├ ${p}gitclone
-├ ${p}pinterest
-├ ${p}img
 ╰────────────────`;
 }
 
@@ -86,8 +80,6 @@ function getSearchMenu() {
 │
 ├ ${p}google
 ├ ${p}yts
-├ ${p}img
-├ ${p}pinterest
 ╰────────────────`;
 }
 
@@ -126,6 +118,7 @@ function getStickerMenu() {
 ├ ${p}attp <teks>
 ├ ${p}ttp <teks>
 ├ ${p}brat <teks>
+├ ${p}bratpc <teks>
 ├ ${p}brat2 <teks>
 ├ ${p}brat3 <teks>
 ├ ${p}bratcolor <teks>|<bg>|<txt>

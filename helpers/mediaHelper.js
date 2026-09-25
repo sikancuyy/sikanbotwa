@@ -213,6 +213,90 @@ async function generateBratCustom({
 }
 
 /**
+ * 2B. BRAT PC (WINDOWS MEDIA PLAYER MEME)
+ * Membuat stiker meme Windows Media Player klasik dengan karakter 3D stickman shrug
+ */
+async function generateBratPc(text, packname, author) {
+  const templatePath = path.join(__dirname, '..', 'assets', 'bratpc_template.png');
+  if (!fs.existsSync(templatePath)) {
+    throw new Error('Template Brat PC tidak ditemukan di server.');
+  }
+
+  const clean = String(text || 'emang BOT nya bisa apa..').trim();
+  const rawLines = clean.split(/\r?\n/);
+  const lines = [];
+
+  for (const rawLine of rawLines) {
+    const words = rawLine.trim().split(/\s+/);
+    let cur = '';
+    for (const w of words) {
+      if (!cur) {
+        cur = w;
+      } else if ((cur + ' ' + w).length <= 11) {
+        cur += ' ' + w;
+      } else {
+        lines.push(cur);
+        cur = w;
+      }
+    }
+    if (cur) lines.push(cur);
+  }
+
+  const count = Math.max(1, lines.length);
+  let fontSize = 48;
+  let lineHeight = 56;
+
+  if (count === 1) {
+    fontSize = 68;
+    lineHeight = 78;
+  } else if (count === 2) {
+    fontSize = 60;
+    lineHeight = 70;
+  } else if (count === 3) {
+    fontSize = 52;
+    lineHeight = 62;
+  } else if (count === 4) {
+    fontSize = 46;
+    lineHeight = 54;
+  } else if (count >= 5) {
+    fontSize = Math.max(26, 42 - (count - 5) * 4);
+    lineHeight = fontSize + 8;
+  }
+
+  const boxWidth = 440;
+  const boxHeight = 600;
+  const centerY = boxHeight / 2;
+  const startY = centerY - ((count * lineHeight) / 2) + (fontSize * 0.75);
+
+  let textSvg = '';
+  lines.forEach((l, i) => {
+    textSvg += `<text x="35" y="${Math.round(startY + i * lineHeight)}" font-family="Arial, Helvetica, sans-serif" font-weight="bold" font-size="${fontSize}" fill="#111111" text-anchor="start">${escapeXml(l)}</text>\n`;
+  });
+
+  const svgOverlay = Buffer.from(`
+    <svg width="${boxWidth}" height="${boxHeight}" viewBox="0 0 ${boxWidth} ${boxHeight}" xmlns="http://www.w3.org/2000/svg">
+      ${textSvg}
+    </svg>
+  `);
+
+  const pngOverlay = await sharp(svgOverlay).png().toBuffer();
+
+  const combinedPng = await sharp(templatePath)
+    .composite([{ input: pngOverlay, top: 180, left: 40 }])
+    .png()
+    .toBuffer();
+
+  const webpBuffer = await sharp(combinedPng)
+    .resize(512, 512, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .webp({ quality: 85 })
+    .toBuffer();
+
+  const pack = packname || config.sticker.packname;
+  const auth = author || config.sticker.author;
+  return await mediaToWebp(webpBuffer, false, pack, auth);
+}
+
+/**
  * 3. STICKER MEME GENERATOR (SMEME)
  * Menempelkan teks atas dan teks bawah dengan gaya font impact pada gambar
  */
@@ -387,6 +471,7 @@ function getRandomRyo() {
 module.exports = {
   generateQuoteChat,
   generateBratCustom,
+  generateBratPc,
   generateStickerMeme,
   generateTTP,
   searchStickerly,
