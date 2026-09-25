@@ -38,13 +38,14 @@ async function getGroupMetadataSafe(sock, chatId, forceRefresh = false) {
   try {
     const data = await Promise.race([
       sock.groupMetadata(chatId),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Group metadata timeout')), 4000))
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Group metadata timeout (12s)')), 12000))
     ]);
     if (data) {
       groupCache.set(chatId, { data, time: now });
     }
     return data;
-  } catch (_) {
+  } catch (err) {
+    console.error(`[WARN] Gagal mengambil groupMetadata (${chatId}):`, err.message);
     return cached?.data || null;
   }
 }
@@ -167,6 +168,9 @@ async function handleMessage(sock, msg, startTime) {
   let isBotAdmin = false;
   let isAdmin = isOwner;
   let groupLoaded = false;
+  let botId = '';
+  let botLid = '';
+  let botParticipant = null;
 
   const loadGroupInfo = async (forceRefresh = false) => {
     if (!isGroup) return;
@@ -179,9 +183,10 @@ async function handleMessage(sock, msg, startTime) {
         groupMembers = groupMetadata.participants || [];
 
         // Normalisasi identitas bot (ID utama, nomor telepon, dan LID multi-device)
-        const botId = jidNormalizedUser(sock.user?.id || '');
-        const botLid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : '';
-        const botJid = sock.user?.jid ? jidNormalizedUser(sock.user.jid) : '';
+        const me = sock.user || sock.authState?.creds?.me || {};
+        botId = jidNormalizedUser(me.id || '');
+        botLid = me.lid ? jidNormalizedUser(me.lid) : '';
+        const botJid = me.jid ? jidNormalizedUser(me.jid) : '';
 
         // Helper cek apakah participant adalah bot
         const isBotParticipant = (m) => {
@@ -209,7 +214,7 @@ async function handleMessage(sock, msg, startTime) {
         const adminParticipants = groupMembers.filter(checkIsAdmin);
         groupAdmins = adminParticipants.map((m) => m.id);
 
-        const botParticipant = groupMembers.find(isBotParticipant) || null;
+        botParticipant = groupMembers.find(isBotParticipant) || null;
         isBotAdmin = Boolean(botParticipant && checkIsAdmin(botParticipant));
 
         // Debug log status bot admin
@@ -1681,13 +1686,31 @@ async function handleMessage(sock, msg, startTime) {
     }
 
     if (command === 'open') {
-      if (!isBotAdmin) return reply('❌ Bot harus menjadi Admin untuk membuka grup!');
+      if (!isBotAdmin) {
+        return reply(
+          '❌ Bot harus menjadi Admin untuk membuka grup!\n\n' +
+          `ℹ️ _Info Diagnostik:_\n` +
+          `• Bot ID: ${botId || '-'}\n` +
+          `• Bot LID: ${botLid || '-'}\n` +
+          `• Peserta Bot: ${botParticipant ? botParticipant.id : 'Tidak Terdeteksi'}\n` +
+          `• Status Admin: ${botParticipant?.admin || 'Bukan Admin'}`
+        );
+      }
       await sock.groupSettingUpdate(chatId, 'not_announcement');
       return reply('🔓 Grup telah dibuka! Semua anggota dapat mengirim pesan.');
     }
 
     if (command === 'close') {
-      if (!isBotAdmin) return reply('❌ Bot harus menjadi Admin untuk menutup grup!');
+      if (!isBotAdmin) {
+        return reply(
+          '❌ Bot harus menjadi Admin untuk menutup grup!\n\n' +
+          `ℹ️ _Info Diagnostik:_\n` +
+          `• Bot ID: ${botId || '-'}\n` +
+          `• Bot LID: ${botLid || '-'}\n` +
+          `• Peserta Bot: ${botParticipant ? botParticipant.id : 'Tidak Terdeteksi'}\n` +
+          `• Status Admin: ${botParticipant?.admin || 'Bukan Admin'}`
+        );
+      }
       await sock.groupSettingUpdate(chatId, 'announcement');
       return reply('🔒 Grup telah ditutup! Hanya admin yang dapat mengirim pesan.');
     }
@@ -1752,7 +1775,16 @@ async function handleMessage(sock, msg, startTime) {
       }
     }
 
-    if (!isBotAdmin) return reply('❌ Bot harus menjadi Admin untuk melakukan aksi ini!');
+    if (!isBotAdmin) {
+      return reply(
+        '❌ Bot harus menjadi Admin untuk melakukan aksi ini!\n\n' +
+        `ℹ️ _Info Diagnostik:_\n` +
+        `• Bot ID: ${botId || '-'}\n` +
+        `• Bot LID: ${botLid || '-'}\n` +
+        `• Peserta Bot: ${botParticipant ? botParticipant.id : 'Tidak Terdeteksi'}\n` +
+        `• Status Admin: ${botParticipant?.admin || 'Bukan Admin'}`
+      );
+    }
 
     const target = msg.message?.extendedTextMessage?.contextInfo?.participant
       || (args[0] ? args[0].replace(/[^0-9]/g, '') + '@s.whatsapp.net' : null);
