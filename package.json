@@ -4,7 +4,9 @@
   "description": "WhatsApp Video Downloader Bot sederhana dan ringan menggunakan Baileys dan yt-dlp untuk Windows",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "clear-session": "node -e \"require('fs').rmSync('session', { recursive: true, force: true }); console.log('✅ Sesi WhatsApp berhasil dibersihkan!')\"",
+    "clearsession": "npm run clear-session"
   },
   "keywords": [
     "whatsapp-bot",
