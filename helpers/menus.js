@@ -28,7 +28,7 @@ function getMainCategoryMenu(pushName = 'Kak', isRegistered = false) {
 ├ ${p}inuser = 👤 Data User
 ├ ${p}intl = 🛠️ Tools
 ├ ${p}ingr = 👥 Fitur Grup
-├ ${p}inadm = 👑 Admin Grup
+├ ${p}inadm = 👑 Menu Owner & Admin
 │
 ├ ${p}inai = 🤖 AI
 ├ ${p}ininfo = ℹ️ Info Bot
@@ -45,6 +45,7 @@ function getGeneralMenu() {
 ├ ${p}help
 ├ ${p}start
 ├ ${p}ping
+├ ${p}pingdt
 ├ ${p}alive
 ├ ${p}uptime
 ├ ${p}runtime
@@ -203,33 +204,57 @@ function getGroupMenu() {
 
 function getAdminMenu() {
   const p = config.prefix;
-  return `╭───〔 👑 OWNER & ADMIN 〕
+  return `╭───〔 👑 *MENU OWNER & ADMIN* 〕
 │
-├ ${p}addadmin <nomor>
-├ ${p}deladmin <nomor>
-├ ${p}listadmin
-├ ${p}daftaruser <nomor>|<nama>
-├ ${p}deluser <ID...>
-├ ${p}listuser
-├ ${p}users
-├ ${p}infouser <ID>
-├ ${p}resetlimit <nomor>
-├ ${p}setunlimited <nomor>
-├ ${p}setlimit <nomor>
-├ ${p}addprem
-├ ${p}delprem
-├ ${p}listprem
-├ ${p}ban
-├ ${p}unban
-├ ${p}block
-├ ${p}unblock
-├ ${p}broadcast
-├ ${p}brouser <pesan>
-├ ${p}join
-├ ${p}leave
-├ ${p}restart
-├ ${p}shutdown
-╰────────────────`;
+│ 📌 *Akses Khusus Owner & Admin Bot*
+│
+├─〔 👑 *KHUSUS OWNER* 〕
+│ • *${p}addadmin <nomor>* : Angkat user jadi Admin Bot
+│ • *${p}deladmin <nomor>* : Cabut hak Admin Bot
+│ • *${p}listadmin* : Daftar seluruh Admin Bot & Owner
+│ • *${p}restart* : Restart server bot
+│ • *${p}shutdown* : Matikan sistem bot
+│
+├─〔 👤 *DATABASE USER* 〕
+│ • *${p}users* / *${p}listuser* : Daftar semua user & statistik
+│ • *${p}daftaruser <nomor>|<nama>* : Daftarkan user manual
+│ • *${p}infouser <ID/nomor>* : Cek detail profil & limit user
+│ • *${p}deluser <ID...>* : Hapus akun user dari database
+│
+├─〔 💎 *LIMIT & PREMIUM* 〕
+│ • *${p}addprem <nomor> [durasi]* : Beri Premium (7d, 30d, perm)
+│ • *${p}delprem <nomor>* : Cabut status Premium user
+│ • *${p}listprem* : Daftar semua user Premium aktif
+│ • *${p}resetlimit <nomor>* : Reset hit limit harian jadi 0
+│ • *${p}setunlimited <nomor>* : Beri akses bebas limit
+│ • *${p}setlimit <nomor> <jumlah>* : Atur kuota limit harian
+│
+├─〔 🚫 *MODERASI & BLOKIR* 〕
+│ • *${p}ban <nomor>* : Banned user dari bot
+│ • *${p}unban <nomor>* : Buka status banned user
+│ • *${p}block [nomor]* : Blokir nomor di WhatsApp
+│ • *${p}unblock [nomor]* : Buka blokir nomor di WhatsApp
+│
+├─〔 📢 *SIARAN & BROADCAST* 〕
+│ • *${p}broadcast <pesan>* : Siaran ke semua grup bot
+│ • *${p}brouser <pesan>* : Siaran ke semua user bot (PM)
+│
+├─〔 ⚙️ *KONTROL BOT* 〕
+│ • *${p}join <link_grup>* : Gabung grup via tautan
+│ • *${p}leave* : Keluar dari grup saat ini
+│
+├─〔 📊 *LOG & AUDIT* 〕
+│ • *${p}pingdt* : Cek status & detail sistem (CPU, RAM, OS)
+│ • *${p}logs [jumlah]* : Log command terbaru bot
+│ • *${p}loguser <nomor>* : Riwayat aktivitas nomor user
+│ • *${p}logcmd <cmd>* : Riwayat pemakaian command
+│ • *${p}logerror* : Catatan error sistem terakhir
+│ • *${p}logdownload* : Riwayat unduhan media
+│ • *${p}loggroup* : Riwayat aktivitas bot di grup
+│ • *${p}stats* : Statistik lengkap performa bot
+│
+╰────────────────
+💡 *Catatan:* <wajib diisi>, [opsional]. Bisa balas (quote) chat user.`;
 }
 
 function getAiMenu() {
@@ -248,6 +273,8 @@ function getInfoMenu() {
   const p = config.prefix;
   return `╭───〔 ℹ️ BOT INFORMATION 〕
 │
+├ ${p}ping
+├ ${p}pingdt
 ├ ${p}bot
 ├ ${p}infobot
 ├ ${p}owner
@@ -263,6 +290,7 @@ function getLogMenu() {
   const p = config.prefix;
   return `╭───〔 📊 LOG & MONITORING 〕
 │
+├ ${p}pingdt
 ├ ${p}logs
 ├ ${p}loguser <nomor>
 ├ ${p}logcmd <command>

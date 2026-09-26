@@ -201,6 +201,61 @@ function log(type, message) {
   console.log(`[${time}] [${type}] ${message}`);
 }
 
+/**
+ * Menghitung persentase penggunaan CPU server secara real-time.
+ * @param {number} sampleMs Lama sampling milidetik (default 60ms)
+ * @returns {Promise<number>} Persentase penggunaan CPU (0-100)
+ */
+function getCpuUsagePercent(sampleMs = 60) {
+  const os = require('os');
+  return new Promise((resolve) => {
+    try {
+      const cpus1 = os.cpus();
+      if (!cpus1 || !cpus1.length) return resolve(0);
+      let idle1 = 0;
+      let total1 = 0;
+      for (const c of cpus1) {
+        for (const t in c.times) total1 += c.times[t];
+        idle1 += c.times.idle;
+      }
+
+      setTimeout(() => {
+        try {
+          const cpus2 = os.cpus();
+          if (!cpus2 || !cpus2.length) return resolve(0);
+          let idle2 = 0;
+          let total2 = 0;
+          for (const c of cpus2) {
+            for (const t in c.times) total2 += c.times[t];
+            idle2 += c.times.idle;
+          }
+          const idleDiff = (idle2 - idle1) / cpus2.length;
+          const totalDiff = (total2 - total1) / cpus2.length;
+          const percent = totalDiff > 0 ? Math.max(0, Math.min(100, Math.round(100 - (100 * idleDiff / totalDiff)))) : 0;
+          resolve(percent);
+        } catch (_) {
+          resolve(0);
+        }
+      }, sampleMs);
+    } catch (_) {
+      resolve(0);
+    }
+  });
+}
+
+/**
+ * Membuat visual progress bar baris teks rapi untuk WhatsApp (misal: ██████░░░░).
+ * @param {number} percent Persentase nilai (0 - 100)
+ * @param {number} length Panjang karakter total (default 10)
+ * @returns {string} String progress bar
+ */
+function createProgressBar(percent, length = 10) {
+  const p = Math.max(0, Math.min(100, Number(percent) || 0));
+  const filled = Math.round((p / 100) * length);
+  const empty = length - filled;
+  return '█'.repeat(filled) + '░'.repeat(empty);
+}
+
 module.exports = {
   ensureDirs,
   cleanDirectory,
@@ -211,5 +266,7 @@ module.exports = {
   formatBytes,
   formatUptime,
   printBanner,
-  log
+  log,
+  getCpuUsagePercent,
+  createProgressBar
 };

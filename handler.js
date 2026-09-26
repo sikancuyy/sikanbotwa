@@ -5,6 +5,7 @@ try {
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const axios = require('axios');
 const { downloadContentFromMessage, jidNormalizedUser, areJidsSameUser } = require('@whiskeysockets/baileys');
 const config = require('./config');
@@ -14,7 +15,7 @@ const games = require('./lib/games');
 const scraper = require('./lib/scraper');
 const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
-const { formatBytes, formatUptime, log, deleteFileSafe } = require('./utils');
+const { formatBytes, formatUptime, log, deleteFileSafe, getCpuUsagePercent, createProgressBar } = require('./utils');
 const { downloadVideo, downloadAudio } = require('./downloader');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
 const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage, groupCache, getGroupMetadataSafe } = require('./helpers/group');
@@ -68,9 +69,10 @@ const VALID_COMMANDS = new Set([
   // Bot Menu Utama & Submenu Kategori
   'menu', 'help', 'start', 'in', 'ins', 'inmenu', 'indownload', 'indw', 'insearch', 'inscr', 'ingame', 'ingm',
   'insticker', 'intts', 'inuser', 'intools', 'intl', 'ingroup', 'ingr', 'inadmin', 'inadm', 'inai', 'ininfo', 'inlog',
+  'inowner', 'ownermenu', 'adminmenu', 'menuowner',
 
   // Bot Menu & Info
-  'ping', 'alive', 'uptime', 'runtime', 'bot', 'infobot',
+  'ping', 'pingdt', 'pingdetail', 'speed', 'alive', 'uptime', 'runtime', 'bot', 'infobot',
   'owner', 'script', 'donate', 'groups', 'blocklist', 'stats',
 
   // User & Limit & Database
@@ -1104,7 +1106,7 @@ async function handleMessage(sock, msg, startTime) {
     return await reply(getGroupMenu());
   }
 
-  if (command === 'inadmin') {
+  if (['inadmin', 'inadm', 'inowner', 'ownermenu', 'adminmenu', 'menuowner'].includes(command)) {
     commandExecutedSuccessfully = true;
     return await reply(getAdminMenu());
   }
@@ -1124,12 +1126,126 @@ async function handleMessage(sock, msg, startTime) {
     return await reply(getLogMenu());
   }
 
-  if (command === 'ping') {
+  if (command === 'ping' || command === 'speed') {
     const latency = Date.now() - (msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now());
     const displayLatency = Math.max(1, Math.abs(latency));
+
+    // Waktu & Uptime Bot
+    const validStartTime = startTime || (Date.now() - Math.floor(process.uptime() * 1000));
+    const botUptimeSec = Math.floor((Date.now() - validStartTime) / 1000);
+
+    // Status Indikator Latensi
+    let latencyBadge = '⚡ Sangat Cepat';
+    if (displayLatency > 500) latencyBadge = '🚀 Normal';
+    if (displayLatency > 1500) latencyBadge = '⏳ Cukup Lambat';
+
+    // Format Ringkas (WA-Friendly) untuk semua user
+    const simplePingText = `╭───〔 🏓 *PONG!* 〕
+│
+│ ⚡ *Respon:* ${displayLatency} ms (${latencyBadge})
+│ ⏱️ *Uptime:* ${formatUptime(botUptimeSec)}
+│ 🟢 *Server:* Aktif & Normal
+│
+╰────────────────`;
+
     commandExecutedSuccessfully = true;
     return await sock.sendMessage(chatId, {
-      text: `🏓 *Pong!*\n\n⚡ *Kecepatan Respon:* ${displayLatency} ms\n⏱️ *Uptime:* ${formatUptime(Math.floor((Date.now() - startTime) / 1000))}\n🟢 *Server:* Aktif & Normal`
+      text: simplePingText
+    }, { quoted: msg });
+  }
+
+  if (command === 'pingdt' || command === 'pingdetail') {
+    const isBotAdminUser = Boolean(userDb && typeof userDb.isBotAdmin === 'function' && userDb.isBotAdmin(sender));
+    const isPrivileged = isOwner || isBotAdminUser || isAdmin;
+
+    // Batasi akses: hanya Owner & Admin
+    if (!isPrivileged) {
+      return reply(`❌ Perintah *${config.prefix}pingdt* hanya dapat diakses oleh *Owner & Admin Bot*!`);
+    }
+
+    const latency = Date.now() - (msg.messageTimestamp ? Number(msg.messageTimestamp) * 1000 : Date.now());
+    const displayLatency = Math.max(1, Math.abs(latency));
+
+    const validStartTime = startTime || (Date.now() - Math.floor(process.uptime() * 1000));
+    const botUptimeSec = Math.floor((Date.now() - validStartTime) / 1000);
+
+    let latencyBadge = '⚡ Sangat Cepat';
+    if (displayLatency > 500) latencyBadge = '🚀 Normal';
+    if (displayLatency > 1500) latencyBadge = '⏳ Cukup Lambat';
+
+    // Pengambilan data sistem lengkap secara real-time
+    const cpuPercent = await getCpuUsagePercent(60);
+    const cpus = os.cpus();
+    const cpuModel = cpus && cpus[0] ? cpus[0].model.trim() : 'Unknown CPU';
+    const cpuSpeed = cpus && cpus[0] ? cpus[0].speed : 0;
+    const cpuCores = cpus ? cpus.length : 1;
+
+    // Memori Server (RAM)
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = Math.max(0, totalMem - freeMem);
+    const memPercent = Math.min(100, Math.max(0, Math.round((usedMem / totalMem) * 100)));
+
+    // Memori Proses Node.js Bot
+    const mem = process.memoryUsage();
+
+    const serverUptimeSec = Math.floor(os.uptime());
+    const userStats = (userDb && typeof userDb.getUsersStats === 'function')
+      ? (userDb.getUsersStats() || {})
+      : {};
+    const totalUsers = (userStats.total || 0).toLocaleString('id-ID');
+    const regUsers = (userStats.registered || 0).toLocaleString('id-ID');
+    const unlimUsers = (userStats.unlimited || 0).toLocaleString('id-ID');
+    const hitsCount = ((db && typeof db.getHits === 'function') ? (db.getHits() || 0) : 0).toLocaleString('id-ID');
+
+    // Format Waktu Server (WIB)
+    const nowWIB = new Date().toLocaleString('id-ID', {
+      timeZone: 'Asia/Jakarta',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    }) + ' WIB';
+
+    const fullPingText = `╭───〔 🏓 *SYSTEM STATUS DETAIL* 〕
+│
+│ ⚡ *Respon:* ${displayLatency} ms (${latencyBadge})
+│ ⏱️ *Bot Uptime:* ${formatUptime(botUptimeSec)}
+│ 🖥️ *Server Uptime:* ${formatUptime(serverUptimeSec)}
+│ 🟢 *Status:* Online & Normal
+│ 📅 *Waktu:* ${nowWIB}
+│
+├─〔 💾 *MEMORI & RAM* 〕
+│ • *RAM Server:* ${formatBytes(usedMem)} / ${formatBytes(totalMem)} (${memPercent}%)
+│ • *RAM Bar:* [${createProgressBar(memPercent, 10)}] ${memPercent}%
+│ • *RAM Bebas:* ${formatBytes(freeMem)}
+│ • *Bot RSS:* ${formatBytes(mem.rss)}
+│ • *Heap:* ${formatBytes(mem.heapUsed)} / ${formatBytes(mem.heapTotal)}
+│
+├─〔 💻 *PROSESOR & CPU* 〕
+│ • *CPU:* ${cpuModel}
+│ • *Core:* ${cpuCores} Cores @ ${cpuSpeed} MHz
+│ • *Beban CPU:* ${cpuPercent}% [${createProgressBar(cpuPercent, 10)}]
+│
+├─〔 🖥️ *SERVER & OS* 〕
+│ • *OS:* ${os.type()} (${process.platform} ${os.arch()})
+│ • *Node.js:* ${process.version}
+│ • *Host:* ${os.hostname()}
+│
+├─〔 🤖 *INFO SIKANBOT* 〕
+│ • *Versi:* ${config.botName} v${config.botVersion}
+│ • *Total Hit:* ${hitsCount} request
+│ • *Pengguna:* ${totalUsers} user (${regUsers} terdaftar)
+│ • *Owner:* ${config.owner.name}
+│
+╰────────────────`;
+
+    commandExecutedSuccessfully = true;
+    return await sock.sendMessage(chatId, {
+      text: fullPingText
     }, { quoted: msg });
   }
 
