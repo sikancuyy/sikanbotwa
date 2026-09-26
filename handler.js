@@ -51,6 +51,12 @@ const {
   normalizeUserNumber,
   isValidUserNumber
 } = require('./helpers/userHelper');
+const {
+  markMessageSent,
+  isDuplicateMessage,
+  isOldMessage,
+  clearDeduplicationCache
+} = require('./helpers/messageDeduplicator');
 
 // Daftar seluruh command valid bot
 const VALID_COMMANDS = new Set([
@@ -304,7 +310,26 @@ function resolveTieredMenu(command, q = '') {
  * Handler utama pesan WhatsApp
  */
 async function handleMessage(sock, msg, startTime) {
-  if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
+  if (!msg || !msg.message || msg.key?.remoteJid === 'status@broadcast') return;
+
+  // Abaikan pesan reaction, protocol message (edit/delete/revoke), dan poll update
+  if (
+    msg.message.reactionMessage ||
+    msg.message.protocolMessage ||
+    msg.message.pollUpdateMessage
+  ) {
+    return;
+  }
+
+  // Abaikan pesan stale / antrean lama (misal saat reconnect setelah offline)
+  if (isOldMessage(msg)) {
+    return;
+  }
+
+  // Cek duplikasi pesan untuk mencegah eksekusi dan pengiriman ulang ganda
+  if (isDuplicateMessage(msg)) {
+    return;
+  }
 
   const chatId = msg.key.remoteJid;
   msg.chat = chatId;
@@ -432,11 +457,16 @@ async function handleMessage(sock, msg, startTime) {
       }
     }
     delete opts.skipAutoMention;
+    let res;
     try {
-      return await sock.sendMessage(chatId, { text, ...opts }, { quoted: msg });
+      res = await sock.sendMessage(chatId, { text, ...opts }, { quoted: msg });
     } catch (_) {
-      return await sock.sendMessage(chatId, { text, ...opts });
+      res = await sock.sendMessage(chatId, { text, ...opts });
     }
+    if (res?.key?.id) {
+      markMessageSent(res.key.id);
+    }
+    return res;
   };
 
   // Helper kehadiran (WhatsApp typing presence dengan auto keep-alive & concurrency tracking)
@@ -623,6 +653,11 @@ async function handleMessage(sock, msg, startTime) {
   // Cek Prefix
   const matchedPrefix = config.prefixes.find((p) => body.startsWith(p));
   if (!matchedPrefix) {
+    // Jika pesan dari akun bot sendiri (fromMe) dan bukan command berprefix, abaikan agar tidak memicu download otomatis/loop
+    if (msg.key?.fromMe) {
+      return;
+    }
+
     // Deteksi URL media otomatis (berjalan di private chat dan di grup)
     const urlMatch = body.match(/https?:\/\/[^\s]+/i);
     if (urlMatch) {
@@ -3645,5 +3680,7 @@ module.exports = {
   setProcessingReaction,
   VALID_COMMANDS,
   extractViewOnceMedia,
-  getMediaBuffer
+  getMediaBuffer,
+  isDuplicateMessage,
+  clearDeduplicationCache
 };

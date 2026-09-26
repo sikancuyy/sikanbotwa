@@ -1751,6 +1751,7 @@ async function runAllTests() {
 
   // 72. Command .ttmusik: Menampilkan instruksi jika tanpa link dan mendukung reply chat
   await itAsync('72. Command .ttmusik: Menampilkan instruksi jika tanpa link dan mengekstrak tautan dari argumen/reply', async () => {
+    users.getDb().prepare('DELETE FROM guest_limits WHERE phone = ?').run('6281234567890');
     processingStatus.resetProcessing();
     const sentMessages = [];
 
@@ -2103,6 +2104,87 @@ async function runAllTests() {
     // 7. Non media / null
     assert.strictEqual(extractViewOnceMedia(null), null);
     assert.strictEqual(extractViewOnceMedia({ conversation: 'Halo' }).isViewOnce, false);
+  });
+
+  // 78. Anti-Resend & Deduplikasi: Pesan dengan ID yang sama hanya diproses 1 kali
+  await itAsync('78. Anti-Resend: Pesan dengan ID duplikat hanya dieksekusi 1 kali dan tidak mengirim balasan ganda', async () => {
+    processingStatus.resetProcessing();
+    const sentReplies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        sentReplies.push({ chat, content });
+        return { key: { id: 'DUP_REPLY_' + Date.now() } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6282277256004:1@s.whatsapp.net' }
+    };
+
+    const duplicateMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_DUP_KEY_123', fromMe: false },
+      message: { conversation: '.ping' }
+    };
+
+    // Eksekusi pertama
+    await handleMessage(mockSock, duplicateMsg, Date.now());
+    const firstReplies = sentReplies.filter((m) => m.content?.text);
+    assert.strictEqual(firstReplies.length, 1, 'Pesan pertama harus berhasil diproses');
+
+    // Eksekusi kedua dengan objek pesan dan ID yang identik (simulasi retry WhatsApp / multiple upsert)
+    sentReplies.length = 0;
+    await handleMessage(mockSock, duplicateMsg, Date.now());
+    assert.strictEqual(sentReplies.length, 0, 'Pesan duplikat kedua harus diabaikan dan tidak boleh mengirim ulang balasan');
+
+    processingStatus.resetProcessing();
+  });
+
+  // 79. Anti-Stale: Pesan lama (lama dalam antrean saat bot offline/reconnect) diabaikan
+  await itAsync('79. Anti-Stale: Pesan antrean yang lebih lama dari 2 menit otomatis diabaikan', async () => {
+    processingStatus.resetProcessing();
+    const sentReplies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        sentReplies.push({ chat, content });
+        return { key: { id: 'STALE_REPLY_' + Date.now() } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6282277256004:1@s.whatsapp.net' }
+    };
+
+    const staleMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_STALE_MSG_999', fromMe: false },
+      message: { conversation: '.ping' },
+      // Timestamp 5 menit yang lalu (300 detik yang lalu)
+      messageTimestamp: Math.floor(Date.now() / 1000) - 300
+    };
+
+    await handleMessage(mockSock, staleMsg, Date.now());
+    assert.strictEqual(sentReplies.length, 0, 'Pesan stale/lama tidak boleh dieksekusi saat bot online');
+
+    processingStatus.resetProcessing();
+  });
+
+  // 80. Anti-Self-Loop: Pesan fromMe tanpa prefix atau echo balasan bot diabaikan
+  await itAsync('80. Anti-Self-Loop: Pesan keluar (fromMe) tanpa prefix tidak memicu auto-download atau respon loop', async () => {
+    processingStatus.resetProcessing();
+    const sentReplies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        sentReplies.push({ chat, content });
+        return { key: { id: 'SELF_REPLY_' + Date.now() } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6282277256004:1@s.whatsapp.net' }
+    };
+
+    const selfMediaUrlMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_SELF_ECHO_777', fromMe: true },
+      message: { conversation: 'https://vt.tiktok.com/ZSbNrSSqc/' }
+    };
+
+    await handleMessage(mockSock, selfMediaUrlMsg, Date.now());
+    assert.strictEqual(sentReplies.length, 0, 'Pesan fromMe tanpa prefix tidak boleh memicu auto-download atau looping');
+
+    processingStatus.resetProcessing();
   });
 
   console.log('\n====================================================');

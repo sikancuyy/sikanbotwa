@@ -25,13 +25,22 @@ const { checkYtDlpAvailable } = require('./downloader');
 const { handleMessage } = require('./handler');
 const userDb = require('./database/users');
 const { getRealPhoneNumber, normalizePhoneNumber, isValidPhoneNumber } = require('./helpers/userHelper');
+const {
+  markMessageSent,
+  shouldIgnoreMessage,
+  isDuplicateGroupEvent
+} = require('./helpers/messageDeduplicator');
 
 // Waktu mulai bot untuk kalkulasi uptime
 const startTime = Date.now();
 
-// Instance aktif Baileys Socket untuk API
+// Instance aktif Baileys Socket untuk API & manajemen siklus koneksi tunggal
 let currentSock = null;
+let activeSock = null;
 let apiServer = null;
+let reconnectTimer = null;
+let isReconnecting = false;
+let isStarting = false;
 
 // Pastikan semua folder yang dibutuhkan siap
 ensureDirs([config.sessionDir, config.tempDir, config.downloadDir]);
@@ -44,6 +53,34 @@ cleanDirectory(config.downloadDir, 0);
  * Fungsi utama untuk menginisialisasi SikanBot
  */
 async function startBot() {
+  // Cegah pemanggilan startBot ganda secara bersamaan
+  if (isStarting) {
+    log('WARN', 'startBot() sedang berjalan, mengabaikan inisialisasi tumpang-tindih.');
+    return;
+  }
+  isStarting = true;
+
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+
+  // Bersihkan socket sebelumnya agar tidak ada multi-instance / zombie socket yang berjalan paralel
+  if (activeSock) {
+    log('INFO', 'Membersihkan instance socket sebelumnya...');
+    try {
+      activeSock.ev.removeAllListeners();
+    } catch (_) {}
+    try {
+      if (typeof activeSock.end === 'function') activeSock.end();
+    } catch (_) {}
+    try {
+      if (activeSock.ws && typeof activeSock.ws.close === 'function') activeSock.ws.close();
+    } catch (_) {}
+    activeSock = null;
+    currentSock = null;
+  }
+
   log('INFO', 'Menginisialisasi SikanBot WhatsApp session...');
 
   // Cek ketersediaan yt-dlp saat startup
@@ -54,19 +91,53 @@ async function startBot() {
     log('SUCCESS', 'yt-dlp & FFmpeg siap digunakan.');
   }
 
-  // Muat status autentikasi multi-file
-  const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir);
-  const { version, isLatest } = await fetchLatestBaileysVersion();
-  log('INFO', `Menggunakan Baileys v${version.join('.')} (Latest: ${isLatest})`);
+  let sock;
+  try {
+    // Muat status autentikasi multi-file
+    const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir);
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    log('INFO', `Menggunakan Baileys v${version.join('.')} (Latest: ${isLatest})`);
 
-  const sock = makeWASocket({
-    version,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    auth: state,
-    generateHighQualityLinkPreview: false,
-    browser: ['SikanBot', 'Chrome', '122.0.0']
-  });
+    sock = makeWASocket({
+      version,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: false,
+      auth: state,
+      generateHighQualityLinkPreview: false,
+      browser: ['SikanBot', 'Chrome', '122.0.0']
+    });
+
+    activeSock = sock;
+  } catch (err) {
+    isStarting = false;
+    log('ERROR', `Gagal membuat instance WhatsApp socket: ${err.message}`);
+    // Jadwalkan reconnect jika pembuatan socket gagal
+    if (!isReconnecting) {
+      isReconnecting = true;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        isReconnecting = false;
+        startBot();
+      }, 5000);
+    }
+    return;
+  } finally {
+    isStarting = false;
+  }
+
+  // Bungkus sendMessage agar setiap pesan yang dikirim oleh bot otomatis tercatat ke cache anti-loop
+  const rawSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (...args) => {
+    try {
+      const res = await rawSendMessage(...args);
+      if (res?.key?.id) {
+        markMessageSent(res.key.id);
+      }
+      return res;
+    } catch (err) {
+      throw err;
+    }
+  };
 
   // Simpan kredensial setiap ada update auth
   sock.ev.on('creds.update', saveCreds);
@@ -142,6 +213,13 @@ async function startBot() {
     // Ketika bot berhasil terhubung
     if (connection === 'open') {
       currentSock = sock;
+      activeSock = sock;
+      isReconnecting = false;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+
       const rawNumber = sock.user?.id || '';
       const botNumber = rawNumber ? '+' + rawNumber.split(':')[0] : 'Unknown';
 
@@ -162,19 +240,40 @@ async function startBot() {
       log('WARN', `Koneksi terputus (Status: ${statusCode || 'Unknown'}). Reconnect: ${shouldReconnect}`);
 
       if (shouldReconnect) {
-        log('INFO', 'Menghubungkan kembali dalam 5 detik...');
-        setTimeout(startBot, 5000);
+        // Cegah penjadwalan timeout reconnect berulang jika event close terpicu lebih dari sekali
+        if (!isReconnecting) {
+          isReconnecting = true;
+          log('INFO', 'Menghubungkan kembali dalam 5 detik...');
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            isReconnecting = false;
+            startBot();
+          }, 5000);
+        }
       } else {
         log('ERROR', 'Sesi telah keluar (Logged Out). Hapus folder "session" lalu scan ulang.');
       }
     }
   });
 
-  // Pantau pesan masuk
+  // Pantau pesan masuk dengan filter anti-duplikasi & auto-ack
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
+      // Filter terpadu: abaikan jika pesan sudah pernah diproses, pesan stale/lama, atau pesan echo dari bot sendiri
+      if (shouldIgnoreMessage(msg, config.prefixes)) {
+        continue;
+      }
+
+      // Beritahu WhatsApp bahwa pesan telah diterima (mencegah server WhatsApp melakukan retry pengiriman berulang)
+      if (msg.key && !msg.key.fromMe) {
+        try {
+          await sock.readMessages([msg.key]);
+        } catch (_) {}
+      }
+
       try {
         await handleMessage(sock, msg, startTime);
       } catch (err) {
@@ -183,7 +282,7 @@ async function startBot() {
     }
   });
 
-  // Pantau member bergabung / keluar grup (Welcome & Leave)
+  // Pantau member bergabung / keluar grup (Welcome & Leave) dengan anti-duplikasi event
   sock.ev.on('group-participants.update', async (update) => {
     try {
       const { id, participants, action } = update;
@@ -205,6 +304,11 @@ async function startBot() {
       }
 
       for (const participant of participants) {
+        // Cegah pengiriman pesan welcome/leave ganda akibat re-sync event grup WhatsApp
+        if (isDuplicateGroupEvent(id, action, participant)) {
+          continue;
+        }
+
         const userNum = getRealPhoneNumber(participant, sock, groupMetadata);
         if (!userNum) {
           // Abaikan jika bukan nomor WhatsApp asli
