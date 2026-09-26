@@ -3537,10 +3537,8 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       }
 
       const fullTextMessage =
-        `━━━━━━━━━━━━━━━━━━━━\n` +
         `📢 *BROADCAST SikanBot*\n\n` +
-        `${bcText || ''}\n` +
-        `━━━━━━━━━━━━━━━━━━━━`;
+        `${bcText || ''}`;
 
       for (const target of targets) {
         const targetJid = target.jid || `${target.phone}@s.whatsapp.net`;
@@ -3610,7 +3608,6 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       return reply(
         `📋 *LOG PENGIRIMAN*\n\n` +
         `${logText}\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━\n\n` +
         `✅ *BROADCAST USER SELESAI*\n\n` +
         `📊 *HASIL BROADCAST*\n` +
         `✅ Berhasil : ${successCount}\n` +
