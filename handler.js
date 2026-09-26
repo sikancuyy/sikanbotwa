@@ -78,7 +78,7 @@ const VALID_COMMANDS = new Set([
 
   // Admin DB & User Management & Logs
   'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit',
-  'addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser',
+  'addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'brouser',
   'logs', 'loguser', 'logcmd', 'logerror', 'logdownload', 'loggroup',
 
   // Download
@@ -104,7 +104,7 @@ const VALID_COMMANDS = new Set([
   'tts',
 
   // Tools
-  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'kan',
+  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'vro',
 
   // Group Management
   'antilink', 'antispam', 'welcome', 'groupinfo', 'linkgroup', 'revoke',
@@ -397,7 +397,7 @@ async function handleMessage(sock, msg, startTime) {
     );
   }
 
-  // 2. Simpan Quoted Message asli sebelum unwrap (untuk fitur seperti KAN / RVO View Once)
+  // 2. Simpan Quoted Message asli sebelum unwrap (untuk fitur seperti VRO View Once)
   const contextInfo =
     rawMessage?.extendedTextMessage?.contextInfo ||
     rawMessage?.imageMessage?.contextInfo ||
@@ -959,15 +959,19 @@ async function handleMessage(sock, msg, startTime) {
     'reguser': 'daftaruser',
     'deluser': 'deluser',
     'hapususer': 'deluser',
+    'brouser': 'brouser',
+    'bcuser': 'brouser',
+    'broadcastuser': 'brouser',
+    'bcastuser': 'brouser',
     // Tools
     'qr': 'qrcode',
     'short': 'shorturl',
     'tr': 'translate',
     'ss': 'ssweb',
     'cuaca': 'weather',
-    'kan': 'kan',
-    'rvo': 'kan',
-    'viewonce': 'kan',
+    'vro': 'vro',
+    'rvo': 'vro',
+    'viewonce': 'vro',
     // Group
     'infogc': 'groupinfo',
     'linkgc': 'linkgroup',
@@ -2731,7 +2735,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     }
   }
 
-  if (command === 'kan') {
+  if (command === 'vro') {
     if (isGroup) {
       await loadGroupInfo();
     }
@@ -2782,7 +2786,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
 
       commandExecutedSuccessfully = true;
     } catch (err) {
-      console.error('[KAN Error]', err);
+      console.error('[VRO Error]', err);
       return reply('❌ Gagal mengambil media View Once.');
     }
     return;
@@ -3071,7 +3075,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   /* ====================================================================
    * 8.1. 🗄️ ADMIN USER DATABASE & MANAGEMENT
    * ==================================================================== */
-  if (['addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit', 'addprem', 'delprem', 'listprem'].includes(command)) {
+  if (['addadmin', 'deladmin', 'listadmin', 'daftaruser', 'deluser', 'users', 'listuser', 'infouser', 'userinfo', 'resetlimit', 'setunlimited', 'setlimit', 'addprem', 'delprem', 'listprem', 'brouser'].includes(command)) {
     const isBotAdminUser = isOwner || userDb.isBotAdmin(sender);
 
     // addadmin & deladmin khusus Owner
@@ -3463,6 +3467,125 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
       userDb.setLimit(target);
       commandExecutedSuccessfully = true;
       return reply(`✅ Berhasil mengembalikan status pengguna ${formatPhoneDisplay(target)} menjadi LIMITED (10 hit/hari guest, 30 hit/hari terdaftar).`);
+    }
+
+    if (command === 'brouser') {
+      const bcText = q ? q.trim() : (quoted?.conversation || quoted?.extendedTextMessage?.text || '');
+      const hasQuotedMedia = Boolean(
+        rawQuotedMessage?.imageMessage ||
+        rawQuotedMessage?.videoMessage ||
+        rawQuotedMessage?.audioMessage
+      );
+
+      if (!bcText && !hasQuotedMedia) {
+        return reply(`📢 *PANDUAN BROADCAST USER*\n\nKirim pesan siaran ke seluruh pengguna bot di database:\n• *Pesan Teks:* ${config.prefix}brouser <isi pesan siaran>\n• *Pesan Media:* Reply foto/video/audio dengan *${config.prefix}brouser <caption opsional>*\n\nContoh:\n*${config.prefix}brouser Halo semua pengguna SikanBot!*`);
+      }
+
+      const broadcastUsers = typeof userDb.getBroadcastUsers === 'function' ? userDb.getBroadcastUsers() : [];
+      if (!broadcastUsers || broadcastUsers.length === 0) {
+        return reply('❌ Belum ada data pengguna di database untuk disiarkan.');
+      }
+
+      // Filter target: jangan kirim ke bot sendiri
+      const botNumClean = botNumber ? botNumber.replace(/[^0-9]/g, '') : '';
+      const targets = broadcastUsers.filter((u) => {
+        const p = String(u.phone).replace(/[^0-9]/g, '');
+        return p && p !== botNumClean;
+      });
+
+      if (targets.length === 0) {
+        return reply('❌ Tidak ada target pengguna yang valid untuk broadcast.');
+      }
+
+      await reply(`⏳ *MEMULAI BROADCAST USER*\n\n• Target Pengguna : *${targets.length} user*\n• Pengirim        : *${pushName || 'Admin'}*\n\n_Mohon tunggu, proses pengiriman pesan sedang berjalan..._`);
+
+      let successCount = 0;
+      let failCount = 0;
+      const bcStartTime = Date.now();
+
+      // Cek apakah ada media yang di-reply
+      let mediaBuffer = null;
+      let mediaType = null;
+      let mimetype = null;
+
+      if (rawQuotedMessage) {
+        if (rawQuotedMessage.imageMessage) {
+          mediaType = 'image';
+          mimetype = rawQuotedMessage.imageMessage.mimetype || 'image/jpeg';
+          try {
+            mediaBuffer = await getMediaBuffer(rawQuotedMessage.imageMessage, 'image');
+          } catch (_) {}
+        } else if (rawQuotedMessage.videoMessage) {
+          mediaType = 'video';
+          mimetype = rawQuotedMessage.videoMessage.mimetype || 'video/mp4';
+          try {
+            mediaBuffer = await getMediaBuffer(rawQuotedMessage.videoMessage, 'video');
+          } catch (_) {}
+        } else if (rawQuotedMessage.audioMessage) {
+          mediaType = 'audio';
+          mimetype = rawQuotedMessage.audioMessage.mimetype || 'audio/mp4';
+          try {
+            mediaBuffer = await getMediaBuffer(rawQuotedMessage.audioMessage, 'audio');
+          } catch (_) {}
+        }
+      }
+
+      const formattedHeader = `📢 *SIARAN RESMI SIKANBOT* 📢\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+      const formattedFooter = `\n\n━━━━━━━━━━━━━━━━━━━━━━━\n` +
+        `_Siaran dari Owner / Admin SikanBot_\n` +
+        `_Ketik ${config.prefix}menu untuk melihat fitur bot_`;
+
+      const fullTextMessage = `${formattedHeader}${bcText || ''}${formattedFooter}`;
+
+      for (const target of targets) {
+        const targetJid = target.jid || `${target.phone}@s.whatsapp.net`;
+        try {
+          if (mediaBuffer && mediaType === 'image') {
+            await sock.sendMessage(targetJid, {
+              image: mediaBuffer,
+              caption: fullTextMessage
+            });
+          } else if (mediaBuffer && mediaType === 'video') {
+            await sock.sendMessage(targetJid, {
+              video: mediaBuffer,
+              mimetype: mimetype,
+              caption: fullTextMessage
+            });
+          } else if (mediaBuffer && mediaType === 'audio') {
+            await sock.sendMessage(targetJid, {
+              audio: mediaBuffer,
+              mimetype: mimetype,
+              ptt: false
+            });
+            if (bcText) {
+              await sock.sendMessage(targetJid, { text: fullTextMessage });
+            }
+          } else {
+            await sock.sendMessage(targetJid, {
+              text: fullTextMessage
+            });
+          }
+          successCount++;
+        } catch (_) {
+          failCount++;
+        }
+        // Jeda waktu aman untuk menghindari batasan anti-spam WhatsApp
+        await new Promise((r) => setTimeout(r, 600));
+      }
+
+      const totalDuration = ((Date.now() - bcStartTime) / 1000).toFixed(1);
+      commandExecutedSuccessfully = true;
+
+      return reply(
+        `✅ *BROADCAST USER SELESAI*\n\n` +
+        `📊 *Laporan Pengiriman:*\n` +
+        `• Total Target : *${targets.length} user*\n` +
+        `• Berhasil     : *${successCount} user*\n` +
+        `• Gagal        : *${failCount} user*\n` +
+        `• Durasi       : *${totalDuration} detik*\n\n` +
+        `_Pesan siaran telah berhasil disebarkan ke database pengguna._`
+      );
     }
   }
 

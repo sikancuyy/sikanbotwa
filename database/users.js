@@ -601,6 +601,52 @@ function getAllRegisteredUsers() {
 }
 
 /**
+ * Mengambil semua user unik (terdaftar & guest) untuk keperluan broadcast
+ */
+function getBroadcastUsers() {
+  const db = getDb();
+  const usersMap = new Map();
+
+  try {
+    const regUsers = db.prepare('SELECT id, phone, jid, name FROM users WHERE phone IS NOT NULL AND LENGTH(phone) > 0').all();
+    for (const u of regUsers) {
+      const clean = String(u.phone).replace(/[^0-9]/g, '');
+      if (clean && !usersMap.has(clean)) {
+        usersMap.set(clean, {
+          id: u.id,
+          phone: clean,
+          jid: u.jid || `${clean}@s.whatsapp.net`,
+          name: u.name || 'User',
+          registered: 1
+        });
+      }
+    }
+  } catch (e) {
+    console.error('[DB Error] getBroadcastUsers regUsers:', e.message);
+  }
+
+  try {
+    const guestUsers = db.prepare('SELECT phone, jid FROM guest_limits WHERE phone IS NOT NULL AND LENGTH(phone) > 0').all();
+    for (const g of guestUsers) {
+      const clean = String(g.phone).replace(/[^0-9]/g, '');
+      if (clean && !usersMap.has(clean)) {
+        usersMap.set(clean, {
+          id: null,
+          phone: clean,
+          jid: g.jid || `${clean}@s.whatsapp.net`,
+          name: 'Guest',
+          registered: 0
+        });
+      }
+    }
+  } catch (e) {
+    console.error('[DB Error] getBroadcastUsers guestUsers:', e.message);
+  }
+
+  return Array.from(usersMap.values());
+}
+
+/**
  * Menghapus user berdasarkan ID database numerik
  */
 function deleteUserById(id) {
@@ -1118,6 +1164,7 @@ module.exports = {
   getUser,
   getUserById,
   getAllRegisteredUsers,
+  getBroadcastUsers,
   deleteUserById,
   getSmallestAvailableId,
   formatIndonesianDate,

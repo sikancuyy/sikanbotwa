@@ -175,7 +175,7 @@ function getToolsMenu() {
 ├ ${p}ssweb
 ├ ${p}ocr
 ├ ${p}weather
-├ ${p}kan (buka foto/video view once)
+├ ${p}vro (buka foto/video view once)
 ╰────────────────`;
 }
 
@@ -224,6 +224,7 @@ function getAdminMenu() {
 ├ ${p}block
 ├ ${p}unblock
 ├ ${p}broadcast
+├ ${p}brouser <pesan>
 ├ ${p}join
 ├ ${p}leave
 ├ ${p}restart

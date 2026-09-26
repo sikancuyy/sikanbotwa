@@ -111,7 +111,7 @@ Bot WhatsApp serbaguna, lengkap, dan modular yang dibangun dengan Node.js, Baile
 ├ .ssweb
 ├ .ocr
 ├ .weather
-├ .kan (buka foto/video view once)
+├ .vro (buka foto/video view once)
 ╰──────────────
 
 ╭───〔 👥 GROUP 〕
@@ -143,6 +143,7 @@ Bot WhatsApp serbaguna, lengkap, dan modular yang dibangun dengan Node.js, Baile
 ├ .block
 ├ .unblock
 ├ .broadcast
+├ .brouser
 ├ .join
 ├ .leave
 ├ .restart

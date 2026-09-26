@@ -1894,8 +1894,8 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
-  // 76. Fitur .kan (Pengganti .rvo View Once): Pembatasan akses Admin/Owner, validasi reply, deteksi View Once foto & video
-  await itAsync('76. Fitur .kan: Pembatasan akses Admin/Owner dan validasi reply media View Once', async () => {
+  // 76. Fitur .vro (Pengganti View Once): Pembatasan akses Admin/Owner, validasi reply, deteksi View Once foto & video
+  await itAsync('76. Fitur .vro: Pembatasan akses Admin/Owner dan validasi reply media View Once', async () => {
     processingStatus.resetProcessing();
     const sentMessages = [];
     const reactions = [];
@@ -1907,15 +1907,15 @@ async function runAllTests() {
         if (content && content.react) {
           reactions.push(content.react);
         }
-        return { key: { id: 'MSG_RES_KAN_' + Date.now() } };
+        return { key: { id: 'MSG_RES_VRO_' + Date.now() } };
       },
       sendPresenceUpdate: async () => {}
     };
 
-    // 1. .kan oleh user biasa (bukan Admin / Owner) harus ditolak
+    // 1. .vro oleh user biasa (bukan Admin / Owner) harus ditolak
     const mockMsgNonAdmin = {
-      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_KAN_DENIED', fromMe: false },
-      message: { conversation: '.kan' }
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_VRO_DENIED', fromMe: false },
+      message: { conversation: '.vro' }
     };
     await handleMessage(mockSock, mockMsgNonAdmin);
 
@@ -1923,14 +1923,14 @@ async function runAllTests() {
     assert.strictEqual(Boolean(errDenied), true, 'Harus menolak user non-admin dan non-owner');
     assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ saat ditolak hak akses');
 
-    // 2. .kan oleh Owner tanpa me-reply pesan apapun
+    // 2. .vro oleh Owner tanpa me-reply pesan apapun
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
     const mockMsgNoReply = {
-      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_KAN_NO_REPLY', fromMe: false },
-      message: { conversation: '.kan' }
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_VRO_NO_REPLY', fromMe: false },
+      message: { conversation: '.vro' }
     };
     await handleMessage(mockSock, mockMsgNoReply);
 
@@ -1938,16 +1938,16 @@ async function runAllTests() {
     assert.strictEqual(Boolean(errNoReply), true, 'Harus meminta reply pesan View Once bagi Owner');
     assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika tidak ada reply');
 
-    // 3. .kan oleh Owner me-reply pesan teks biasa (bukan View Once)
+    // 3. .vro oleh Owner me-reply pesan teks biasa (bukan View Once)
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
     const mockMsgTextReply = {
-      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_KAN_TEXT_REPLY', fromMe: false },
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_VRO_TEXT_REPLY', fromMe: false },
       message: {
         extendedTextMessage: {
-          text: '.kan',
+          text: '.vro',
           contextInfo: {
             quotedMessage: {
               conversation: 'Halo ini teks biasa'
@@ -1962,16 +1962,16 @@ async function runAllTests() {
     assert.strictEqual(Boolean(errNotVo), true, 'Harus menolak jika pesan bukan View Once');
     assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika bukan View Once');
 
-    // 4. .kan oleh Owner me-reply foto biasa (non-View Once)
+    // 4. .vro oleh Owner me-reply foto biasa (non-View Once)
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
     const mockMsgNormalImage = {
-      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_KAN_NORMAL_IMG', fromMe: false },
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_VRO_NORMAL_IMG', fromMe: false },
       message: {
         extendedTextMessage: {
-          text: '.kan',
+          text: '.vro',
           contextInfo: {
             quotedMessage: {
               imageMessage: {
@@ -1988,7 +1988,7 @@ async function runAllTests() {
     const errNormalImg = sentMessages.find((m) => m.content?.text && m.content.text.includes('Pesan yang di-reply bukan View Once.'));
     assert.strictEqual(Boolean(errNormalImg), true, 'Harus menolak jika foto bukan View Once');
 
-    // 5. Alias .rvo tetap berfungsi dan diarahkan ke .kan untuk Owner
+    // 5. Alias .rvo tetap berfungsi dan diarahkan ke .vro untuk Owner
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
@@ -2002,11 +2002,21 @@ async function runAllTests() {
     const errAliasNoReply = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
     assert.strictEqual(Boolean(errAliasNoReply), true, 'Alias .rvo harus diteruskan ke handler View Once');
 
+    // 6. Perintah usang .kan ditolak / tidak dikenali
+    sentMessages.length = 0;
+    processingStatus.resetProcessing();
+    const mockMsgOldKan = {
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_OLD_KAN', fromMe: false },
+      message: { conversation: '.kan' }
+    };
+    await handleMessage(mockSock, mockMsgOldKan);
+    assert.strictEqual(sentMessages.length, 0, 'Perintah .kan harus dihapus dan tidak boleh merespons');
+
     processingStatus.resetProcessing();
   });
 
-  // 77. Fitur .rvo: Ekstraksi dan deteksi struktur View Once Baileys (viewOnceMessage, viewOnceMessageV2, viewOnceMessageV2Extension, ephemeral, viewOnce flag)
-  it('77. Fitur .rvo: Ekstraksi dan deteksi struktur View Once Baileys (V1, V2, V2Extension, Ephemeral, dan Direct Flag)', () => {
+  // 77. Fitur .vro: Ekstraksi dan deteksi struktur View Once Baileys (viewOnceMessage, viewOnceMessageV2, viewOnceMessageV2Extension, ephemeral, viewOnce flag)
+  it('77. Fitur .vro: Ekstraksi dan deteksi struktur View Once Baileys (V1, V2, V2Extension, Ephemeral, dan Direct Flag)', () => {
     const { extractViewOnceMedia } = require('../handler');
 
     // 1. viewOnceMessage V1 (Image dengan caption)
@@ -2183,6 +2193,61 @@ async function runAllTests() {
 
     await handleMessage(mockSock, selfMediaUrlMsg, Date.now());
     assert.strictEqual(sentReplies.length, 0, 'Pesan fromMe tanpa prefix tidak boleh memicu auto-download atau looping');
+
+    processingStatus.resetProcessing();
+  });
+
+  // 81. Fitur .brouser: Broadcast pesan ke seluruh user database oleh Admin/Owner
+  await itAsync('81. Fitur .brouser: Broadcast pesan ke seluruh user database oleh Admin/Owner', async () => {
+    processingStatus.resetProcessing();
+    const sentReplies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        sentReplies.push({ chat, content });
+        return { key: { id: 'BC_REPLY_' + Date.now() } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6282277256004:1@s.whatsapp.net' }
+    };
+
+    // 1. User biasa (non-admin) mencoba .brouser => ditolak
+    const nonAdminMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_BC_DENIED', fromMe: false },
+      message: { conversation: '.brouser Halo semua' }
+    };
+    await handleMessage(mockSock, nonAdminMsg, Date.now());
+    const deniedReply = sentReplies.find((m) => m.content?.text && m.content.text.includes('khusus untuk *Admin Bot & Owner*'));
+    assert.ok(deniedReply, 'User biasa harus ditolak dari perintah .brouser');
+
+    // 2. Owner menjalankan .brouser tanpa teks => menampilkan panduan
+    sentReplies.length = 0;
+    processingStatus.resetProcessing();
+    const ownerNoTextMsg = {
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'TEST_BC_GUIDE', fromMe: false },
+      message: { conversation: '.brouser' }
+    };
+    await handleMessage(mockSock, ownerNoTextMsg, Date.now());
+    const guideReply = sentReplies.find((m) => m.content?.text && m.content.text.includes('PANDUAN BROADCAST USER'));
+    assert.ok(guideReply, '.brouser tanpa parameter harus menampilkan panduan penggunaan');
+
+    // 3. Owner menjalankan .brouser dengan pesan teks => siaran terkirim
+    sentReplies.length = 0;
+    processingStatus.resetProcessing();
+    const ownerBroadcastMsg = {
+      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'TEST_BC_EXEC', fromMe: false },
+      message: { conversation: '.brouser Halo ini pengumuman update bot terbaru!' }
+    };
+    await handleMessage(mockSock, ownerBroadcastMsg, Date.now());
+
+    // Memeriksa status mulai dan laporan selesai
+    const startMsg = sentReplies.find((m) => m.content?.text && m.content.text.includes('MEMULAI BROADCAST USER'));
+    const finishMsg = sentReplies.find((m) => m.content?.text && m.content.text.includes('BROADCAST USER SELESAI'));
+    assert.ok(startMsg, 'Harus mengirim notifikasi memulai broadcast user');
+    assert.ok(finishMsg, 'Harus mengirim laporan rekapitulasi broadcast user selesai');
+
+    // Memeriksa bahwa pesan broadcast terkirim ke target user WhatsApp
+    const userTargetMsgs = sentReplies.filter((m) => m.chat && m.chat.endsWith('@s.whatsapp.net') && m.content?.text?.includes('pengumuman update'));
+    assert.ok(userTargetMsgs.length > 0, 'Pesan harus terkirim ke JID user WhatsApp');
 
     processingStatus.resetProcessing();
   });
