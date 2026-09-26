@@ -1,3 +1,8 @@
+// Preload sharp terlebih dahulu untuk mencegah konflik DLL native antara sharp v0.35 dan wa-sticker-formatter (sharp v0.30)
+try {
+  require('sharp');
+} catch (_) {}
+
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
@@ -7,13 +12,13 @@ const db = require('./lib/database');
 const userDb = require('./database/users');
 const games = require('./lib/games');
 const scraper = require('./lib/scraper');
+const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe } = require('./utils');
 const { downloadVideo, downloadAudio } = require('./downloader');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
 const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage, groupCache, getGroupMetadataSafe } = require('./helpers/group');
 const { generateTTS, convertToVoiceNote, cleanTempAudio } = require('./helpers/tts');
-const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const {
   startProcessing,
   stopProcessing,

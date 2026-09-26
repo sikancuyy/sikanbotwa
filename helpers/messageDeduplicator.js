@@ -43,11 +43,31 @@ function isMessageSentByBot(msgId) {
 }
 
 /**
- * Periksa apakah pesan adalah duplikat yang sudah pernah / sedang diproses
+ * Periksa apakah pesan sudah pernah diproses tanpa menandainya
  * @param {object} msg - Objek pesan Baileys
  * @returns {boolean}
  */
-function isDuplicateMessage(msg) {
+function hasProcessedMessage(msg) {
+  if (!msg || !msg.key) return false;
+  const id = msg.key.id;
+  const remoteJid = msg.key.remoteJid || '';
+  if (!id) return false;
+
+  if (isMessageSentByBot(id)) {
+    return true;
+  }
+
+  const compositeKey = `${remoteJid}:${id}`;
+  return PROCESSED_MESSAGES.has(compositeKey) || PROCESSED_MESSAGES.has(id);
+}
+
+/**
+ * Periksa apakah pesan adalah duplikat yang sudah pernah / sedang diproses
+ * @param {object} msg - Objek pesan Baileys
+ * @param {boolean} mark - Apakah pesan baru langsung ditandai ke cache (default true)
+ * @returns {boolean}
+ */
+function isDuplicateMessage(msg, mark = true) {
   if (!msg || !msg.key) return false;
   const id = msg.key.id;
   const remoteJid = msg.key.remoteJid || '';
@@ -65,10 +85,12 @@ function isDuplicateMessage(msg) {
     return true;
   }
 
-  // Tandai pesan sebagai sudah diproses
-  PROCESSED_MESSAGES.set(compositeKey, now);
-  PROCESSED_MESSAGES.set(id, now);
-  cleanupCache();
+  // Tandai pesan sebagai sudah diproses jika mark === true
+  if (mark) {
+    PROCESSED_MESSAGES.set(compositeKey, now);
+    PROCESSED_MESSAGES.set(id, now);
+    cleanupCache();
+  }
 
   return false;
 }
@@ -169,8 +191,8 @@ function shouldIgnoreMessage(msg, prefixes = ['.', '/', '!']) {
     return true;
   }
 
-  // Abaikan jika pesan ini adalah duplikat yang sudah diproses
-  if (isDuplicateMessage(msg)) {
+  // Abaikan jika pesan ini adalah duplikat yang sudah pernah diproses sebelumnya
+  if (hasProcessedMessage(msg)) {
     return true;
   }
 
@@ -224,6 +246,7 @@ function clearDeduplicationCache() {
 module.exports = {
   markMessageSent,
   isMessageSentByBot,
+  hasProcessedMessage,
   isDuplicateMessage,
   isOldMessage,
   isDuplicateGroupEvent,

@@ -1,3 +1,8 @@
+// Preload sharp terlebih dahulu untuk mencegah konflik DLL native Windows
+try {
+  require('sharp');
+} catch (_) {}
+
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -92,9 +97,12 @@ async function startBot() {
   }
 
   let sock;
+  let saveCreds;
   try {
     // Muat status autentikasi multi-file
-    const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir);
+    const authState = await useMultiFileAuthState(config.sessionDir);
+    const state = authState.state;
+    saveCreds = authState.saveCreds;
     const { version, isLatest } = await fetchLatestBaileysVersion();
     log('INFO', `Menggunakan Baileys v${version.join('.')} (Latest: ${isLatest})`);
 
@@ -252,7 +260,20 @@ async function startBot() {
           }, 5000);
         }
       } else {
-        log('ERROR', 'Sesi telah keluar (Logged Out). Hapus folder "session" lalu scan ulang.');
+        log('ERROR', 'Sesi telah keluar (Logged Out / 401). Membersihkan folder sesi lama agar siap scan QR ulang...');
+        try {
+          fs.rmSync(config.sessionDir, { recursive: true, force: true });
+        } catch (_) {}
+        if (!isReconnecting) {
+          isReconnecting = true;
+          log('INFO', 'Menyiapkan QR Code login baru dalam 3 detik...');
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            isReconnecting = false;
+            startBot();
+          }, 3000);
+        }
       }
     }
   });
