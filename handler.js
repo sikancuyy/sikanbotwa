@@ -3497,11 +3497,17 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
         return reply('❌ Tidak ada target pengguna yang valid untuk broadcast.');
       }
 
-      await reply(`⏳ *MEMULAI BROADCAST USER*\n\n• Target Pengguna : *${targets.length} user*\n• Pengirim        : *${pushName || 'Admin'}*\n\n_Mohon tunggu, proses pengiriman pesan sedang berjalan..._`);
+      await reply(
+        `⏳ *MEMULAI BROADCAST USER*\n\n` +
+        `👥 *Target Pengguna* : ${targets.length} user\n` +
+        `👤 *Pengirim*        : ${pushName || 'Admin'}\n\n` +
+        `_Mohon tunggu, pesan sedang dikirim..._`
+      );
 
       let successCount = 0;
       let failCount = 0;
       const bcStartTime = Date.now();
+      const deliveryLogs = [];
 
       // Cek apakah ada media yang di-reply
       let mediaBuffer = null;
@@ -3530,16 +3536,21 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
         }
       }
 
-      const formattedHeader = `📢 *SIARAN RESMI SIKANBOT* 📢\n` +
-        `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-      const formattedFooter = `\n\n━━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `_Siaran dari Owner / Admin SikanBot_\n` +
-        `_Ketik ${config.prefix}menu untuk melihat fitur bot_`;
-
-      const fullTextMessage = `${formattedHeader}${bcText || ''}${formattedFooter}`;
+      const fullTextMessage =
+        `━━━━━━━━━━━━━━━━━━━━\n` +
+        `📢 *BROADCAST SikanBot*\n\n` +
+        `${bcText || ''}\n` +
+        `━━━━━━━━━━━━━━━━━━━━`;
 
       for (const target of targets) {
         const targetJid = target.jid || `${target.phone}@s.whatsapp.net`;
+        let targetPhone = String(target.phone || '').replace(/[^0-9]/g, '');
+        if (targetPhone.startsWith('62')) {
+          targetPhone = '0' + targetPhone.slice(2);
+        }
+        const targetName = target.name || 'User';
+
+        let isSuccess = false;
         try {
           if (mediaBuffer && mediaType === 'image') {
             await sock.sendMessage(targetJid, {
@@ -3567,24 +3578,44 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
             });
           }
           successCount++;
+          isSuccess = true;
         } catch (_) {
           failCount++;
         }
+
+        deliveryLogs.push({
+          name: targetName,
+          phone: targetPhone,
+          success: isSuccess
+        });
+
         // Jeda waktu aman untuk menghindari batasan anti-spam WhatsApp
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, 400));
       }
 
       const totalDuration = ((Date.now() - bcStartTime) / 1000).toFixed(1);
       commandExecutedSuccessfully = true;
 
+      const MAX_LOG_DISPLAY = 40;
+      const logEntries = deliveryLogs.slice(0, MAX_LOG_DISPLAY).map((item, idx) => {
+        const statusMark = item.success ? '' : ' ❌ (Gagal)';
+        return `${idx + 1}. ${item.name}\n   └─ ${item.phone}${statusMark}`;
+      });
+
+      let logText = logEntries.join('\n\n');
+      if (deliveryLogs.length > MAX_LOG_DISPLAY) {
+        logText += `\n\n... dan ${deliveryLogs.length - MAX_LOG_DISPLAY} pengguna lainnya`;
+      }
+
       return reply(
+        `📋 *LOG PENGIRIMAN*\n\n` +
+        `${logText}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━\n\n` +
         `✅ *BROADCAST USER SELESAI*\n\n` +
-        `📊 *Laporan Pengiriman:*\n` +
-        `• Total Target : *${targets.length} user*\n` +
-        `• Berhasil     : *${successCount} user*\n` +
-        `• Gagal        : *${failCount} user*\n` +
-        `• Durasi       : *${totalDuration} detik*\n\n` +
-        `_Pesan siaran telah berhasil disebarkan ke database pengguna._`
+        `📊 *HASIL BROADCAST*\n` +
+        `✅ Berhasil : ${successCount}\n` +
+        `❌ Gagal    : ${failCount}\n` +
+        `⏱️ Durasi   : ${totalDuration} detik`
       );
     }
   }
