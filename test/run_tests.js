@@ -2252,6 +2252,124 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
+  // 82. Fitur Auto-Detect: Ekstraksi URL dan Deteksi Platform Media
+  it('82. Fitur Auto-Detect: Ekstraksi URL dan Deteksi Platform Media (TikTok, IG, YT, FB, X, dll)', () => {
+    const { extractUrl, detectPlatform, isSupportedMediaUrl } = require('../helpers/linkDetector');
+
+    // Test ekstraksi URL dengan berbagai format (termasuk trailing punctuation)
+    const ttUrl = extractUrl('cek video ini dong https://vt.tiktok.com/ZSxyz123/ keren banget');
+    assert.strictEqual(ttUrl, 'https://vt.tiktok.com/ZSxyz123/');
+
+    const igUrl = extractUrl('https://www.instagram.com/reel/C3abcxyz/?utm_source=ig_web_copy_link.');
+    assert.strictEqual(igUrl, 'https://www.instagram.com/reel/C3abcxyz/?utm_source=ig_web_copy_link');
+
+    const ytUrl = extractUrl('Nonton podcast ini: (https://youtu.be/dQw4w9WgXcQ)');
+    assert.strictEqual(ytUrl, 'https://youtu.be/dQw4w9WgXcQ');
+
+    const fbUrl = extractUrl('fb.watch/xyz123abc/');
+    assert.strictEqual(fbUrl, 'https://fb.watch/xyz123abc/');
+
+    const capcutUrl = extractUrl('Template: https://www.capcut.com/t/Zs8xyz/');
+    assert.strictEqual(capcutUrl, 'https://www.capcut.com/t/Zs8xyz/');
+
+    const mfUrl = extractUrl('Unduh di https://www.mediafire.com/file/abc/file.zip/file');
+    assert.strictEqual(mfUrl, 'https://www.mediafire.com/file/abc/file.zip/file');
+
+    // Test deteksi nama platform
+    assert.strictEqual(detectPlatform(ttUrl).platform, 'tiktok');
+    assert.strictEqual(detectPlatform(ttUrl).name, 'TikTok');
+
+    assert.strictEqual(detectPlatform(igUrl).platform, 'instagram');
+    assert.strictEqual(detectPlatform('https://www.instagram.com/stories/user/123/').name, 'Instagram Story');
+
+    assert.strictEqual(detectPlatform(ytUrl).platform, 'youtube');
+    assert.strictEqual(detectPlatform('https://youtube.com/shorts/xyz123').name, 'YouTube Shorts');
+
+    assert.strictEqual(detectPlatform(fbUrl).platform, 'facebook');
+    assert.strictEqual(detectPlatform(fbUrl).name, 'Facebook');
+
+    assert.strictEqual(detectPlatform('https://x.com/user/status/123').platform, 'twitter');
+    assert.strictEqual(detectPlatform('https://x.com/user/status/123').name, 'Twitter (X)');
+
+    assert.strictEqual(detectPlatform(capcutUrl).platform, 'capcut');
+    assert.strictEqual(detectPlatform(capcutUrl).name, 'CapCut');
+
+    assert.strictEqual(detectPlatform(mfUrl).platform, 'mediafire');
+    assert.strictEqual(detectPlatform(mfUrl).name, 'MediaFire');
+
+    assert.strictEqual(detectPlatform('https://pin.it/xyz123').platform, 'pinterest');
+    assert.strictEqual(detectPlatform('https://threads.net/@user/post/123').platform, 'threads');
+
+    // Test non-media link
+    assert.strictEqual(isSupportedMediaUrl('https://wikipedia.org'), false);
+    assert.strictEqual(detectPlatform('https://google.com').isSupported, false);
+  });
+
+  // 83. Fitur Auto-Detect: Pesan masuk berisi link tanpa prefix otomatis dideteksi platformnya
+  await itAsync('83. Fitur Auto-Detect: Pesan tanpa perintah di awal memicu deteksi platform', async () => {
+    processingStatus.resetProcessing();
+    const sentReplies = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        sentReplies.push({ chat, content });
+        return { key: { id: 'AUTO_DL_' + Date.now() } };
+      },
+      sendPresenceUpdate: async () => {},
+      user: { id: '6282277256004:1@s.whatsapp.net' }
+    };
+
+    // User mengirim link tanpa perintah/prefix di awal (misal link tiktok atau mediafire)
+    const mediafireMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_AUTODL_LINK', fromMe: false },
+      message: { conversation: 'tolong unduh https://www.mediafire.com/file/invalid123/test.zip makasih' }
+    };
+
+    await handleMessage(mockSock, mediafireMsg, Date.now());
+
+    // Cek bahwa bot memproses link tanpa prefix dan memberikan respon deteksi platform (MediaFire)
+    const failureOrSuccess = sentReplies.find((m) => m.content?.text && (m.content.text.includes('MediaFire') || m.content.text.includes('Gagal')));
+    assert.ok(failureOrSuccess, 'Bot harus memproses link MediaFire otomatis tanpa perintah di awal');
+
+    processingStatus.resetProcessing();
+  });
+
+  // 84. Concurrent Download: Multiple user mendownload secara bersamaan tanpa saling menunggu
+  await itAsync('84. Concurrent Download: Multiple user dapat mendownload bersamaan tanpa antrean serial', async () => {
+    const { downloadQueue } = require('../downloader');
+    const executedTimes = [];
+
+    // Simulasi 3 request download dari user berbeda yang datang bersamaan
+    const user1Task = downloadQueue.enqueue(async () => {
+      const start = Date.now();
+      await new Promise((r) => setTimeout(r, 100));
+      executedTimes.push({ user: 'user1', duration: Date.now() - start });
+      return 'ok1';
+    }, 'user1');
+
+    const user2Task = downloadQueue.enqueue(async () => {
+      const start = Date.now();
+      await new Promise((r) => setTimeout(r, 100));
+      executedTimes.push({ user: 'user2', duration: Date.now() - start });
+      return 'ok2';
+    }, 'user2');
+
+    const user3Task = downloadQueue.enqueue(async () => {
+      const start = Date.now();
+      await new Promise((r) => setTimeout(r, 100));
+      executedTimes.push({ user: 'user3', duration: Date.now() - start });
+      return 'ok3';
+    }, 'user3');
+
+    const overallStart = Date.now();
+    const results = await Promise.all([user1Task, user2Task, user3Task]);
+    const totalElapsed = Date.now() - overallStart;
+
+    assert.deepStrictEqual(results, ['ok1', 'ok2', 'ok3']);
+    // Jika serial (antrean 1-1), total waktu akan >= 300ms.
+    // Jika concurrent, total waktu sekitar 100-150ms!
+    assert.ok(totalElapsed < 280, `Ketiga task harus berjalan bersamaan secara konkuren (total: ${totalElapsed}ms)`);
+  });
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');

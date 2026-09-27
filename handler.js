@@ -17,6 +17,7 @@ const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMe
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe, getCpuUsagePercent, createProgressBar } = require('./utils');
 const { downloadVideo, downloadAudio } = require('./downloader');
+const { extractUrl, detectPlatform, isSupportedMediaUrl } = require('./helpers/linkDetector');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
 const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage, groupCache, getGroupMetadataSafe } = require('./helpers/group');
 const { generateTTS, convertToVoiceNote, cleanTempAudio } = require('./helpers/tts');
@@ -665,14 +666,13 @@ async function handleMessage(sock, msg, startTime) {
       return;
     }
 
-    // Deteksi URL media otomatis (berjalan di private chat dan di grup)
-    const urlMatch = body.match(/https?:\/\/[^\s]+/i);
-    if (urlMatch) {
-      const detectedUrl = urlMatch[0];
-      const isMediaUrl = /(tiktok\.com|douyin\.com|instagram\.com|facebook\.com|fb\.watch|fb\.com|threads\.net|twitter\.com|x\.com|youtube\.com|youtu\.be|pinterest\.com|pin\.it|spotify\.com|soundcloud\.com|mediafire\.com|drive\.google\.com|capcut\.com|snackvideo\.com|sck\.io|likee\.video|rednote|xiaohongshu\.com)/i.test(detectedUrl);
+    // Deteksi URL otomatis dari isi pesan (tanpa perintah di awal)
+    const detectedUrl = extractUrl(body);
+    if (detectedUrl) {
+      const platformInfo = detectPlatform(detectedUrl);
 
-      // Di grup, hanya proses jika berupa link media agar tidak mengganggu percakapan / link artikel umum
-      if (!isGroup || isMediaUrl) {
+      // Hanya proses jika URL adalah platform media yang didukung
+      if (platformInfo && platformInfo.isSupported) {
         // Status Pemrosesan: Reaksi ⏳ + Indikator Mengetik (composing)
         await startProcessing(sock, msg);
         let downloadSuccess = false;
@@ -689,8 +689,8 @@ async function handleMessage(sock, msg, startTime) {
             return;
           }
 
-          // Jika link adalah TikTok, periksa apakah berupa slide foto atau video
-          if (/tiktok\.com/i.test(detectedUrl)) {
+          // 1. TIKTOK (Video No-Watermark / Slide Foto & Audio)
+          if (platformInfo.platform === 'tiktok') {
             try {
               const data = await scraper.getTikTok(detectedUrl);
               if (data && (data.isSlide || (Array.isArray(data.images) && data.images.length > 0))) {
@@ -699,7 +699,7 @@ async function handleMessage(sock, msg, startTime) {
                   const imgUrl = data.images[i];
                   const isFirst = i === 0;
                   const caption = isFirst
-                    ? `✨ *TikTok Slide Foto (${totalPhotos} Foto)*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}\n\n📷 Foto [1/${totalPhotos}]`
+                    ? `✨ *TikTok Slide Foto (${totalPhotos} Foto)*\n\n👤 Author: ${data.author || 'TikTok'}\n📝 Caption: ${data.title || '-'}\n\n📷 Foto [1/${totalPhotos}]`
                     : `📷 Foto [${i + 1}/${totalPhotos}]`;
                   try {
                     const imgRes = await axios.get(imgUrl, {
@@ -723,7 +723,7 @@ async function handleMessage(sock, msg, startTime) {
               } else if (data && data.videoUrl) {
                 await sock.sendMessage(chatId, {
                   video: { url: data.videoUrl },
-                  caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}`
+                  caption: `✨ *TikTok Downloader (No Watermark)*\n\n👤 Author: ${data.author || 'TikTok'}\n📝 Caption: ${data.title || '-'}`
                 }, { quoted: msg });
                 downloadSuccess = true;
                 return;
@@ -733,10 +733,10 @@ async function handleMessage(sock, msg, startTime) {
             }
           }
 
-          // Jika link adalah Instagram (Reel, Post, Carousel Foto & Video, Story)
-          if (/instagram\.com/i.test(detectedUrl)) {
+          // 2. INSTAGRAM (Reel, Post, Carousel Foto & Video, Story)
+          else if (platformInfo.platform === 'instagram') {
             try {
-              const isStory = /instagram\.com\/stories\//i.test(detectedUrl);
+              const isStory = platformInfo.isStory || /instagram\.com\/stories\//i.test(detectedUrl);
               const data = isStory
                 ? await scraper.getInstagramStory(detectedUrl)
                 : await scraper.getInstagram(detectedUrl);
@@ -791,16 +791,73 @@ async function handleMessage(sock, msg, startTime) {
                 return;
               }
             } catch (_) {
-              // Lanjut ke fallback yt-dlp jika getInstagram gagal
+              // Lanjut ke fallback yt-dlp jika scraper Instagram gagal
             }
           }
 
+          // 3. MEDIAFIRE (Direct File Download)
+          else if (platformInfo.platform === 'mediafire') {
+            try {
+              const mfData = await scraper.getMediafire(detectedUrl);
+              if (mfData && mfData.downloadUrl) {
+                const res = await axios.get(mfData.downloadUrl, {
+                  responseType: 'arraybuffer',
+                  timeout: 45000,
+                  headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                });
+                const fileBuf = Buffer.from(res.data);
+                if (fileBuf.length > config.maxFileSizeMB * 1024 * 1024) {
+                  throw new Error(`Ukuran file (${formatBytes(fileBuf.length)}) melebihi batas bot (${config.maxFileSizeMB} MB).`);
+                }
+                await sock.sendMessage(chatId, {
+                  document: fileBuf,
+                  fileName: mfData.filename,
+                  mimetype: 'application/octet-stream',
+                  caption: `📦 *MediaFire Downloader*\n\n📄 *File:* ${mfData.filename}\n📦 *Ukuran:* ${mfData.size}`
+                }, { quoted: msg });
+                downloadSuccess = true;
+                return;
+              }
+            } catch (mfErr) {
+              throw new Error(`MediaFire: ${mfErr.message}`);
+            }
+          }
+
+          // 4. GITHUB (Clone ZIP Repository)
+          else if (platformInfo.platform === 'github') {
+            try {
+              const repoData = scraper.getGitClone(detectedUrl);
+              const zipRes = await axios.get(repoData.zipUrl, {
+                responseType: 'arraybuffer',
+                maxRedirects: 5,
+                timeout: 30000,
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }
+              });
+              const zipBuffer = Buffer.from(zipRes.data);
+              if (zipBuffer.length > config.maxFileSizeMB * 1024 * 1024) {
+                throw new Error(`Ukuran file repository (${formatBytes(zipBuffer.length)}) melebihi batas bot (${config.maxFileSizeMB} MB).`);
+              }
+              await sock.sendMessage(chatId, {
+                document: zipBuffer,
+                fileName: repoData.filename,
+                mimetype: 'application/zip',
+                caption: `🐙 *GitHub Downloader*\n\n📁 *Repo:* ${repoData.user}/${repoData.repo}\n📦 *Ukuran:* ${formatBytes(zipBuffer.length)}`
+              }, { quoted: msg });
+              downloadSuccess = true;
+              return;
+            } catch (ghErr) {
+              throw new Error(`GitHub: ${ghErr.message}`);
+            }
+          }
+
+          // 5. YT-DLP ENGINE (YouTube, Facebook, Twitter/X, CapCut, Threads, Pinterest, SnackVideo, dll)
           if (!downloadSuccess) {
-            const result = await downloadVideo(detectedUrl, requestId);
+            const result = await downloadVideo(detectedUrl, requestId, sender);
             const videoBuffer = fs.readFileSync(result.filePath);
+            const labelPlatform = platformInfo.name || 'Media';
             await sock.sendMessage(chatId, {
               video: videoBuffer,
-              caption: `🎥 *${result.title}*\n📦 Ukuran: ${formatBytes(result.fileSize)}`,
+              caption: `✨ *${labelPlatform} Downloader*\n\n🎬 *Judul:* ${result.title}\n📦 *Ukuran:* ${formatBytes(result.fileSize)}`,
               mimetype: 'video/mp4'
             }, { quoted: msg });
             deleteFileSafe(result.filePath);
@@ -813,7 +870,7 @@ async function handleMessage(sock, msg, startTime) {
           lastCommandError = downloadError;
           if (!isGroup) {
             try {
-              await reply(`❌ Gagal mengunduh media dari link: ${downloadError}`);
+              await reply(`❌ Gagal mengunduh media [${platformInfo.name}]: ${downloadError}`);
             } catch (_) {}
           }
         } finally {
@@ -830,7 +887,7 @@ async function handleMessage(sock, msg, startTime) {
               userId: sender,
               number: senderNumber,
               username: pushName || '',
-              command: 'autodownload',
+              command: `autodownload_${platformInfo.platform || 'media'}`,
               arguments: detectedUrl,
               chatType: isGroup ? 'group' : 'private',
               chatId: chatId,
@@ -1756,7 +1813,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       // Fallback ke yt-dlp jika scraper API gagal (khusus video)
       const reqId = `tt_${Date.now()}`;
       try {
-        const result = await downloadVideo(q, reqId);
+        const result = await downloadVideo(q, reqId, sender);
         const vidBuf = fs.readFileSync(result.filePath);
         await sock.sendMessage(chatId, {
           video: vidBuf,
@@ -1825,7 +1882,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       // 2. Fallback: Ekstraksi audio via downloadAudio (yt-dlp)
       if (!audioSent) {
         const reqId = `tt_audio_${Date.now()}`;
-        const result = await downloadAudio(targetUrl, reqId);
+        const result = await downloadAudio(targetUrl, reqId, sender);
         const audioBuf = fs.readFileSync(result.filePath);
         const cleanTitle = (result.title || 'tiktok_audio').slice(0, 40).replace(/[\\/:*?"<>|]/g, '').trim() || 'tiktok_audio';
         await sock.sendMessage(chatId, {
@@ -1945,11 +2002,11 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       if (!isStoryCmd && /^https?:\/\//i.test(q)) {
         try {
           const reqId = `ig_${Date.now()}`;
-          const res = await downloadVideo(q, reqId);
+          const res = await downloadVideo(q, reqId, sender);
           const videoBuff = fs.readFileSync(res.filePath);
           await sock.sendMessage(chatId, {
             video: videoBuff,
-            caption: `🎥 *${res.title}*\n📦 Ukuran: ${formatBytes(res.fileSize)}`
+            caption: `✨ *Instagram Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(res.fileSize)}`
           }, { quoted: msg });
           deleteFileSafe(res.filePath);
           return;
@@ -1964,11 +2021,11 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     if (!q) return reply(`Masukkan URL Twitter/X!\nContoh: *${config.prefix}twitter https://twitter.com/...*`);
     const reqId = `twitter_${Date.now()}`;
     try {
-      const res = await downloadVideo(q, reqId);
+      const res = await downloadVideo(q, reqId, sender);
       const videoBuff = fs.readFileSync(res.filePath);
       await sock.sendMessage(chatId, {
         video: videoBuff,
-        caption: `🎥 *${res.title}*\n📦 Ukuran: ${formatBytes(res.fileSize)}`
+        caption: `✨ *Twitter (X) Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(res.fileSize)}`
       }, { quoted: msg });
       deleteFileSafe(res.filePath);
       commandExecutedSuccessfully = true;

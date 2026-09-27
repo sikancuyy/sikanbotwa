@@ -70,8 +70,18 @@ function getDownloadMenu() {
 ├ ${p}tiktokstalk
 ├ ${p}ig / ${p}reel
 ├ ${p}igstory / ${p}story
-├ ${p}twitter
+├ ${p}fb / ${p}facebook
+├ ${p}twitter / ${p}x
+├ ${p}capcut
+├ ${p}threads
+├ ${p}pin / ${p}pinterest
+├ ${p}mf / ${p}mediafire
 ├ ${p}gitclone
+│
+├ 💡 *Auto-Detect Link:*
+│ Kirim link TikTok, IG, YT, FB,
+│ X, CapCut, MF, dll *tanpa perintah*,
+│ bot otomatis deteksi & download!
 ╰────────────────`;
 }
 

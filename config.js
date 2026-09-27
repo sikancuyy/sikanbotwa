@@ -58,8 +58,9 @@ module.exports = {
 
   // Batasan Download & Sistem
   maxFileSizeMB: 70,
-  downloadTimeoutMs: 3 * 60 * 1000,
-  maxConcurrentDownloads: 2,
+  downloadTimeoutMs: 2 * 60 * 1000,
+  maxConcurrentDownloads: process.env.MAX_CONCURRENT_DOWNLOADS ? parseInt(process.env.MAX_CONCURRENT_DOWNLOADS, 10) : 8,
+  perUserConcurrentLimit: 2,
 
   // Konfigurasi API Server
   apiPort: process.env.PORT || 3000,
