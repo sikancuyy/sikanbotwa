@@ -750,7 +750,7 @@ async function handleMessage(sock, msg, startTime) {
                   }
                 });
 
-                const writer = fs.createWriteStream(downloadedFilePath);
+                const writer = fs.createWriteStream(downloadedFilePath, { highWaterMark: 1024 * 1024 });
                 dlStream.data.pipe(writer);
                 await new Promise((resolve, reject) => {
                   writer.on('finish', resolve);
@@ -764,7 +764,7 @@ async function handleMessage(sock, msg, startTime) {
 
                 await updateReactionProgress(msg, 50);
                 await updateReactionProgress(msg, 70);
-                const opt = await processVideoForWhatsApp(downloadedFilePath, requestId);
+                const opt = await processVideoForWhatsApp(downloadedFilePath, requestId, 8, { isTikTok: true, fastDownload: true });
                 optimizedFilePath = opt.filePath;
                 const finalSize = opt.fileSize || fs.statSync(optimizedFilePath).size;
 
@@ -1944,7 +1944,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
             }
           });
 
-          const writer = fs.createWriteStream(downloadedFilePath);
+          const writer = fs.createWriteStream(downloadedFilePath, { highWaterMark: 1024 * 1024 });
           dlStream.data.pipe(writer);
           await new Promise((resolve, reject) => {
             writer.on('finish', resolve);
@@ -1958,7 +1958,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
 
           await updateReactionProgress(msg, 50);
           await updateReactionProgress(msg, 70);
-          const opt = await processVideoForWhatsApp(downloadedFilePath, reqId);
+          const opt = await processVideoForWhatsApp(downloadedFilePath, reqId, 8, { isTikTok: true, fastDownload: true });
           optimizedFilePath = opt.filePath;
           const finalSize = opt.fileSize || fs.statSync(optimizedFilePath).size;
 
@@ -2002,7 +2002,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
         downloadedFilePath = result.filePath;
         await updateReactionProgress(msg, 50);
         await updateReactionProgress(msg, 70);
-        const opt = await processVideoForWhatsApp(downloadedFilePath, reqId);
+        const opt = await processVideoForWhatsApp(downloadedFilePath, reqId, 8, { isTikTok: true, fastDownload: true });
         optimizedFilePath = opt.filePath;
         const finalSize = opt.fileSize || result.fileSize;
 
