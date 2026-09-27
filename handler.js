@@ -17,6 +17,16 @@ const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMe
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe, getCpuUsagePercent, createProgressBar } = require('./utils');
 const { downloadVideo, downloadAudio } = require('./downloader');
+const { processVideoForWhatsApp } = require('./helpers/videoOptimizer');
+const {
+  startReactionProgress,
+  startReactionAnimation,
+  updateReactionProgress,
+  updateReactionAnimation,
+  setFinalReaction,
+  stopReaction,
+  stopReactionAnimation
+} = require('./helpers/reactionAnimator');
 const { extractUrl, detectPlatform, isSupportedMediaUrl } = require('./helpers/linkDetector');
 const { checkUserLimit, consumeUserLimit, formatUserStatus } = require('./helpers/limit');
 const { getValidGroupParticipants, filterActiveMentions, isGroupAdmin, isBotAdmin, formatKickMessage, groupCache, getGroupMetadataSafe } = require('./helpers/group');
@@ -691,9 +701,14 @@ async function handleMessage(sock, msg, startTime) {
 
           // 1. TIKTOK (Video No-Watermark / Slide Foto & Audio)
           if (platformInfo.platform === 'tiktok') {
+            startReactionProgress(sock, msg);
+            let downloadedFilePath = null;
+            let optimizedFilePath = null;
+
             try {
               const data = await scraper.getTikTok(detectedUrl);
               if (data && (data.isSlide || (Array.isArray(data.images) && data.images.length > 0))) {
+                await updateReactionProgress(msg, 50);
                 const totalPhotos = data.images.length;
                 for (let i = 0; i < totalPhotos; i++) {
                   const imgUrl = data.images[i];
@@ -718,18 +733,70 @@ async function handleMessage(sock, msg, startTime) {
                     await sock.sendMessage(chatId, { audio: { url: data.audioUrl }, mimetype: 'audio/mp4' }, { quoted: msg });
                   } catch (_) {}
                 }
+                await setFinalReaction(sock, msg, '✅');
                 downloadSuccess = true;
                 return;
               } else if (data && data.videoUrl) {
-                await sock.sendMessage(chatId, {
-                  video: { url: data.videoUrl },
-                  caption: `✨ *TikTok Downloader (No Watermark)*\n\n👤 Author: ${data.author || 'TikTok'}\n📝 Caption: ${data.title || '-'}`
-                }, { quoted: msg });
+                downloadedFilePath = path.join(config.tempDir, `tt_${requestId}.mp4`);
+                const dlStream = await axios({
+                  method: 'GET',
+                  url: data.videoUrl,
+                  responseType: 'stream',
+                  timeout: 60000,
+                  maxRedirects: 5,
+                  headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.tiktok.com/'
+                  }
+                });
+
+                const writer = fs.createWriteStream(downloadedFilePath);
+                dlStream.data.pipe(writer);
+                await new Promise((resolve, reject) => {
+                  writer.on('finish', resolve);
+                  writer.on('error', reject);
+                  dlStream.data.on('error', reject);
+                });
+
+                if (!fs.existsSync(downloadedFilePath) || fs.statSync(downloadedFilePath).size === 0) {
+                  throw new Error('File video TikTok kosong atau gagal diunduh.');
+                }
+
+                await updateReactionProgress(msg, 50);
+                await updateReactionProgress(msg, 70);
+                const opt = await processVideoForWhatsApp(downloadedFilePath, requestId);
+                optimizedFilePath = opt.filePath;
+                const finalSize = opt.fileSize || fs.statSync(optimizedFilePath).size;
+
+                await updateReactionProgress(msg, 90);
+                try {
+                  await sock.sendMessage(chatId, {
+                    video: { url: optimizedFilePath },
+                    caption: `✨ *TikTok Downloader (No Watermark)*\n\n👤 Author: ${data.author || 'TikTok'}\n📝 Caption: ${data.title || '-'}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+                    mimetype: 'video/mp4'
+                  }, { quoted: msg });
+                } catch (_) {
+                  const videoBuffer = fs.readFileSync(optimizedFilePath);
+                  await sock.sendMessage(chatId, {
+                    video: videoBuffer,
+                    caption: `✨ *TikTok Downloader (No Watermark)*\n\n👤 Author: ${data.author || 'TikTok'}\n📝 Caption: ${data.title || '-'}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+                    mimetype: 'video/mp4'
+                  }, { quoted: msg });
+                }
+
+                await setFinalReaction(sock, msg, '✅');
                 downloadSuccess = true;
                 return;
               }
-            } catch (_) {
-              // Lanjut ke fallback yt-dlp jika getTikTok gagal
+            } catch (ttErr) {
+              log('WARN', `TikTok direct download gagal, beralih ke fallback yt-dlp: ${ttErr.message}`);
+              // downloadSuccess tetap false, sehingga otomatis lanjut ke yt-dlp di bawah
+            } finally {
+              stopReaction(msg);
+              deleteFileSafe(downloadedFilePath);
+              if (optimizedFilePath && optimizedFilePath !== downloadedFilePath) {
+                deleteFileSafe(optimizedFilePath);
+              }
             }
           }
 
@@ -852,16 +919,50 @@ async function handleMessage(sock, msg, startTime) {
 
           // 5. YT-DLP ENGINE (YouTube, Facebook, Twitter/X, CapCut, Threads, Pinterest, SnackVideo, dll)
           if (!downloadSuccess) {
-            const result = await downloadVideo(detectedUrl, requestId, sender);
-            const videoBuffer = fs.readFileSync(result.filePath);
-            const labelPlatform = platformInfo.name || 'Media';
-            await sock.sendMessage(chatId, {
-              video: videoBuffer,
-              caption: `✨ *${labelPlatform} Downloader*\n\n🎬 *Judul:* ${result.title}\n📦 *Ukuran:* ${formatBytes(result.fileSize)}`,
-              mimetype: 'video/mp4'
-            }, { quoted: msg });
-            deleteFileSafe(result.filePath);
-            downloadSuccess = true;
+            startReactionProgress(sock, msg);
+            let downloadedFilePath = null;
+            let optimizedFilePath = null;
+
+            try {
+              const result = await downloadVideo(detectedUrl, requestId, sender);
+              downloadedFilePath = result.filePath;
+
+              await updateReactionProgress(msg, 50);
+              await updateReactionProgress(msg, 70);
+              const opt = await processVideoForWhatsApp(downloadedFilePath, requestId);
+              optimizedFilePath = opt.filePath;
+              const finalSize = opt.fileSize || result.fileSize;
+              const labelPlatform = platformInfo.name || 'Media';
+
+              await updateReactionProgress(msg, 90);
+              // Kirim via URL streaming untuk menghemat RAM VPS secara signifikan
+              try {
+                await sock.sendMessage(chatId, {
+                  video: { url: optimizedFilePath },
+                  caption: `✨ *${labelPlatform} Downloader*\n\n🎬 *Judul:* ${result.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+                  mimetype: 'video/mp4'
+                }, { quoted: msg });
+              } catch (_) {
+                const videoBuffer = fs.readFileSync(optimizedFilePath);
+                await sock.sendMessage(chatId, {
+                  video: videoBuffer,
+                  caption: `✨ *${labelPlatform} Downloader*\n\n🎬 *Judul:* ${result.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+                  mimetype: 'video/mp4'
+                }, { quoted: msg });
+              }
+
+              await setFinalReaction(sock, msg, '✅');
+              downloadSuccess = true;
+            } catch (errYt) {
+              await setFinalReaction(sock, msg, '❌');
+              throw errYt;
+            } finally {
+              stopReaction(msg);
+              deleteFileSafe(downloadedFilePath);
+              if (optimizedFilePath && optimizedFilePath !== downloadedFilePath) {
+                deleteFileSafe(optimizedFilePath);
+              }
+            }
           }
         } catch (e) {
           downloadSuccess = false;
@@ -1713,23 +1814,47 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     }
 
     const tempVideo = path.join(config.tempDir, `vid_${Date.now()}.mp4`);
+    startReactionProgress(sock, msg);
+    let optimizedFilePath = null;
     try {
       const dlRes = await scraper.downloadYouTubeVideo(queryText, tempVideo);
       if (dlRes.success && fs.existsSync(tempVideo)) {
-        const vidBuffer = fs.readFileSync(tempVideo);
-        await sock.sendMessage(chatId, {
-          video: vidBuffer,
-          caption: `🎥 *YouTube Video:* ${dlRes.title}`,
-          mimetype: 'video/mp4'
-        }, { quoted: msg });
-        deleteFileSafe(tempVideo);
+        await updateReactionProgress(msg, 50);
+        await updateReactionProgress(msg, 70);
+        const opt = await processVideoForWhatsApp(tempVideo, `yt_${Date.now()}`);
+        optimizedFilePath = opt.filePath;
+
+        await updateReactionProgress(msg, 90);
+        try {
+          await sock.sendMessage(chatId, {
+            video: { url: optimizedFilePath },
+            caption: `🎥 *YouTube Video:* ${dlRes.title}`,
+            mimetype: 'video/mp4'
+          }, { quoted: msg });
+        } catch (_) {
+          const vidBuffer = fs.readFileSync(optimizedFilePath);
+          await sock.sendMessage(chatId, {
+            video: vidBuffer,
+            caption: `🎥 *YouTube Video:* ${dlRes.title}`,
+            mimetype: 'video/mp4'
+          }, { quoted: msg });
+        }
+
+        await setFinalReaction(sock, msg, '✅');
         commandExecutedSuccessfully = true;
       } else {
+        await setFinalReaction(sock, msg, '❌');
         reply('❌ Gagal mengunduh video YouTube.');
       }
     } catch (e) {
-      deleteFileSafe(tempVideo);
+      await setFinalReaction(sock, msg, '❌');
       reply(`❌ Error: ${e.message}`);
+    } finally {
+      stopReaction(msg);
+      deleteFileSafe(tempVideo);
+      if (optimizedFilePath && optimizedFilePath !== tempVideo) {
+        deleteFileSafe(optimizedFilePath);
+      }
     }
     return;
   }
@@ -1801,27 +1926,110 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
 
       // KASUS 2: POSTINGAN ADALAH VIDEO
       if (data.videoUrl) {
-        await sock.sendMessage(chatId, {
-          video: { url: data.videoUrl },
-          caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}`
-        }, { quoted: msg });
-        return;
+        const reqId = `tt_${Date.now()}`;
+        startReactionProgress(sock, msg);
+        let downloadedFilePath = path.join(config.tempDir, `${reqId}.mp4`);
+        let optimizedFilePath = null;
+
+        try {
+          const dlStream = await axios({
+            method: 'GET',
+            url: data.videoUrl,
+            responseType: 'stream',
+            timeout: 60000,
+            maxRedirects: 5,
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              'Referer': 'https://www.tiktok.com/'
+            }
+          });
+
+          const writer = fs.createWriteStream(downloadedFilePath);
+          dlStream.data.pipe(writer);
+          await new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+            dlStream.data.on('error', reject);
+          });
+
+          if (!fs.existsSync(downloadedFilePath) || fs.statSync(downloadedFilePath).size === 0) {
+            throw new Error('File video TikTok kosong atau gagal diunduh.');
+          }
+
+          await updateReactionProgress(msg, 50);
+          await updateReactionProgress(msg, 70);
+          const opt = await processVideoForWhatsApp(downloadedFilePath, reqId);
+          optimizedFilePath = opt.filePath;
+          const finalSize = opt.fileSize || fs.statSync(optimizedFilePath).size;
+
+          await updateReactionProgress(msg, 90);
+          try {
+            await sock.sendMessage(chatId, {
+              video: { url: optimizedFilePath },
+              caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+              mimetype: 'video/mp4'
+            }, { quoted: msg });
+          } catch (_) {
+            const vidBuf = fs.readFileSync(optimizedFilePath);
+            await sock.sendMessage(chatId, {
+              video: vidBuf,
+              caption: `✨ *TikTok No Watermark*\n\n👤 Author: ${data.author}\n📝 Caption: ${data.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+              mimetype: 'video/mp4'
+            }, { quoted: msg });
+          }
+
+          await setFinalReaction(sock, msg, '✅');
+          commandExecutedSuccessfully = true;
+          return;
+        } finally {
+          stopReaction(msg);
+          deleteFileSafe(downloadedFilePath);
+          if (optimizedFilePath && optimizedFilePath !== downloadedFilePath) {
+            deleteFileSafe(optimizedFilePath);
+          }
+        }
       }
 
       throw new Error('Tidak ditemukan video ataupun foto dari link TikTok ini.');
     } catch (e) {
       // Fallback ke yt-dlp jika scraper API gagal (khusus video)
       const reqId = `tt_${Date.now()}`;
+      startReactionProgress(sock, msg);
+      let downloadedFilePath = null;
+      let optimizedFilePath = null;
       try {
         const result = await downloadVideo(q, reqId, sender);
-        const vidBuf = fs.readFileSync(result.filePath);
-        await sock.sendMessage(chatId, {
-          video: vidBuf,
-          caption: `✨ *TikTok Video:* ${result.title}`
-        }, { quoted: msg });
-        deleteFileSafe(result.filePath);
+        downloadedFilePath = result.filePath;
+        await updateReactionProgress(msg, 50);
+        await updateReactionProgress(msg, 70);
+        const opt = await processVideoForWhatsApp(downloadedFilePath, reqId);
+        optimizedFilePath = opt.filePath;
+        const finalSize = opt.fileSize || result.fileSize;
+
+        await updateReactionProgress(msg, 90);
+        try {
+          await sock.sendMessage(chatId, {
+            video: { url: optimizedFilePath },
+            caption: `✨ *TikTok Video:* ${result.title}`
+          }, { quoted: msg });
+        } catch (_) {
+          const vidBuf = fs.readFileSync(optimizedFilePath);
+          await sock.sendMessage(chatId, {
+            video: vidBuf,
+            caption: `✨ *TikTok Video:* ${result.title}`
+          }, { quoted: msg });
+        }
+
+        await setFinalReaction(sock, msg, '✅');
       } catch (err2) {
+        await setFinalReaction(sock, msg, '❌');
         reply(`❌ Gagal memproses TikTok: ${e.message || err2.message}`);
+      } finally {
+        stopReaction(msg);
+        deleteFileSafe(downloadedFilePath);
+        if (optimizedFilePath && optimizedFilePath !== downloadedFilePath) {
+          deleteFileSafe(optimizedFilePath);
+        }
       }
     }
     return;
@@ -2000,17 +2208,44 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     } catch (igErr) {
       // Fallback ke yt-dlp jika getInstagram gagal pada link reguler
       if (!isStoryCmd && /^https?:\/\//i.test(q)) {
+        const reqId = `ig_${Date.now()}`;
+        startReactionProgress(sock, msg);
+        let downloadedFilePath = null;
+        let optimizedFilePath = null;
         try {
-          const reqId = `ig_${Date.now()}`;
           const res = await downloadVideo(q, reqId, sender);
-          const videoBuff = fs.readFileSync(res.filePath);
-          await sock.sendMessage(chatId, {
-            video: videoBuff,
-            caption: `✨ *Instagram Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(res.fileSize)}`
-          }, { quoted: msg });
-          deleteFileSafe(res.filePath);
+          downloadedFilePath = res.filePath;
+          await updateReactionProgress(msg, 50);
+          await updateReactionProgress(msg, 70);
+          const opt = await processVideoForWhatsApp(downloadedFilePath, reqId);
+          optimizedFilePath = opt.filePath;
+          const finalSize = opt.fileSize || res.fileSize;
+
+          await updateReactionProgress(msg, 90);
+          try {
+            await sock.sendMessage(chatId, {
+              video: { url: optimizedFilePath },
+              caption: `✨ *Instagram Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`
+            }, { quoted: msg });
+          } catch (_) {
+            const videoBuff = fs.readFileSync(optimizedFilePath);
+            await sock.sendMessage(chatId, {
+              video: videoBuff,
+              caption: `✨ *Instagram Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`
+            }, { quoted: msg });
+          }
+
+          await setFinalReaction(sock, msg, '✅');
           return;
-        } catch (_) {}
+        } catch (_) {
+          await setFinalReaction(sock, msg, '❌');
+        } finally {
+          stopReaction(msg);
+          deleteFileSafe(downloadedFilePath);
+          if (optimizedFilePath && optimizedFilePath !== downloadedFilePath) {
+            deleteFileSafe(optimizedFilePath);
+          }
+        }
       }
       return reply(`❌ Gagal mengunduh Instagram: ${igErr.message}\n\n💡 *Tips:* Pastikan akun Instagram bersifat publik dan link postingan valid. Untuk konten yang memerlukan login, letakkan file *cookies.txt* di folder bot.`);
     }
@@ -2020,17 +2255,43 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   if (command === 'twitter') {
     if (!q) return reply(`Masukkan URL Twitter/X!\nContoh: *${config.prefix}twitter https://twitter.com/...*`);
     const reqId = `twitter_${Date.now()}`;
+    startReactionProgress(sock, msg);
+    let downloadedFilePath = null;
+    let optimizedFilePath = null;
     try {
       const res = await downloadVideo(q, reqId, sender);
-      const videoBuff = fs.readFileSync(res.filePath);
-      await sock.sendMessage(chatId, {
-        video: videoBuff,
-        caption: `✨ *Twitter (X) Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(res.fileSize)}`
-      }, { quoted: msg });
-      deleteFileSafe(res.filePath);
+      downloadedFilePath = res.filePath;
+      await updateReactionProgress(msg, 50);
+      await updateReactionProgress(msg, 70);
+      const opt = await processVideoForWhatsApp(downloadedFilePath, reqId);
+      optimizedFilePath = opt.filePath;
+      const finalSize = opt.fileSize || res.fileSize;
+
+      await updateReactionProgress(msg, 90);
+      try {
+        await sock.sendMessage(chatId, {
+          video: { url: optimizedFilePath },
+          caption: `✨ *Twitter (X) Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`
+        }, { quoted: msg });
+      } catch (_) {
+        const videoBuff = fs.readFileSync(optimizedFilePath);
+        await sock.sendMessage(chatId, {
+          video: videoBuff,
+          caption: `✨ *Twitter (X) Downloader*\n\n🎬 *Judul:* ${res.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`
+        }, { quoted: msg });
+      }
+
+      await setFinalReaction(sock, msg, '✅');
       commandExecutedSuccessfully = true;
     } catch (err) {
+      await setFinalReaction(sock, msg, '❌');
       reply(`❌ Gagal mengunduh: ${err.message}`);
+    } finally {
+      stopReaction(msg);
+      deleteFileSafe(downloadedFilePath);
+      if (optimizedFilePath && optimizedFilePath !== downloadedFilePath) {
+        deleteFileSafe(optimizedFilePath);
+      }
     }
     return;
   }

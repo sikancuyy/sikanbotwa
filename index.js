@@ -295,11 +295,10 @@ async function startBot() {
         } catch (_) {}
       }
 
-      try {
-        await handleMessage(sock, msg, startTime);
-      } catch (err) {
+      // Proses pesan secara asynchronous agar respon seketika dan tidak memblokir antrean pesan lainnya
+      handleMessage(sock, msg, startTime).catch((err) => {
         log('ERROR', `Error menangani pesan: ${err.message}`);
-      }
+      });
     }
   });
 

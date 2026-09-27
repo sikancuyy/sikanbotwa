@@ -74,7 +74,6 @@ function getDownloadMenu() {
 ├ ${p}twitter / ${p}x
 ├ ${p}capcut
 ├ ${p}threads
-├ ${p}pin / ${p}pinterest
 ├ ${p}mf / ${p}mediafire
 ├ ${p}gitclone
 │
@@ -89,7 +88,6 @@ function getSearchMenu() {
   const p = config.prefix;
   return `╭───〔 🔎 SEARCH 〕
 │
-├ ${p}google
 ├ ${p}yts
 ╰────────────────`;
 }
@@ -118,11 +116,9 @@ function getStickerMenu() {
   const p = config.prefix;
   return `╭───〔 🧩 STICKER & MEDIA 〕
 │
-├ ${p}sticker [pack|author]
+├ ${p}sticker / ${p}s [pack|author]
 ├ ${p}take / ${p}wm [pack|author]
 ├ ${p}smaker <teks>
-├ ${p}getsticker <keyword>
-├ ${p}stickersearch <query>
 ├ ${p}emix / ${p}emojimix
 ├ ${p}toimg
 ├ ${p}tovideo
@@ -141,13 +137,6 @@ function getStickerMenu() {
 ├ ${p}animebrat2 <teks>
 ├ ${p}qc [warna]|[teks]
 ├ ${p}qc2 [warna]|[teks]
-├ ${p}smeme <atas>|<bawah>
-├ ${p}emojigif <emoji>
-├ ${p}gifsticker <query>,<jml>
-├ ${p}stly / ${p}stickerlysearch
-├ ${p}telestick <url>
-├ ${p}tenor <query>
-├ ${p}ryo
 ╰────────────────`;
 }
 

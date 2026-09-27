@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 const config = require('./config');
 const { resolveBinary, deleteFileSafe, log } = require('./utils');
+const { processVideoForWhatsApp } = require('./helpers/videoOptimizer');
 
 /**
  * Worker Pool & Concurrency Manager untuk unduhan simultan multi-user.
@@ -213,8 +214,8 @@ function executeDownload(url, id) {
       '--extractor-args', 'youtube:player_client=android,ios,web',
       // Multi-threaded fragment downloading: percepat download stream HLS/DASH hingga 3-5x lipat
       '--concurrent-fragments', '4',
-      // Prioritaskan format MP4 (H.264) + M4A (AAC) agar FFmpeg langsung remux tanpa transcoding berat
-      '-f', 'bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]/best',
+      // Prioritaskan format MP4 (H.264) + M4A (AAC) atau progressive stream MP4 langsung agar FFmpeg tidak perlu merge berat
+      '-f', 'b[ext=mp4][vcodec^=avc1][acodec^=mp4a]/b[ext=mp4]/bv*[height<=720][vcodec^=avc1][ext=mp4]+ba[acodec^=mp4a][ext=m4a]/bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]/best',
       '--merge-output-format', 'mp4',
       '--socket-timeout', '15',
       '--retries', '3',
@@ -474,5 +475,6 @@ module.exports = {
   getVideoMetadata,
   downloadVideo,
   downloadAudio,
-  downloadQueue
+  downloadQueue,
+  processVideoForWhatsApp
 };

@@ -2370,6 +2370,355 @@ async function runAllTests() {
     assert.ok(totalElapsed < 280, `Ketiga task harus berjalan bersamaan secara konkuren (total: ${totalElapsed}ms)`);
   });
 
+  // 85. Status Animator: Animasi emoji proses berulang (⏳->⚡->🔄, 🤔->🔍->💡, 📩->⚙️->📤, 📥->⏳->📑)
+  await itAsync('85. Status Animator: Animasi emoji proses berulang secara periodik sesuai kategori', async () => {
+    const { createStatusAnimator, EMOJI_SETS } = require('../helpers/statusAnimator');
+    const sentEdits = [];
+    const createdMessages = [];
+
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        if (content.edit) {
+          sentEdits.push({ chat, content });
+          return { key: content.edit };
+        } else {
+          const key = { remoteJid: chat, id: 'STATUS_KEY_' + Date.now(), fromMe: true };
+          createdMessages.push({ chat, content, key });
+          return { key };
+        }
+      }
+    };
+
+    const anim = createStatusAnimator(mockSock, 'chat_anim_1@s.whatsapp.net', null, { intervalMs: 50 });
+    await anim.start('Memproses data...', 'loading');
+
+    // Pesan awal terkirim dengan frame pertama
+    assert.strictEqual(createdMessages.length, 1);
+    assert.strictEqual(createdMessages[0].content.text, '⏳ Memproses data...');
+
+    // Tunggu interval berjalan beberapa tick
+    await new Promise((r) => setTimeout(r, 180));
+    anim.stop();
+
+    // Verifikasi edit terjadi dan hanya mengedit pesan yang sama
+    assert.ok(sentEdits.length >= 2, `Harus ada beberapa edit (didapat: ${sentEdits.length})`);
+    assert.strictEqual(sentEdits[0].content.text, '⚡ Memproses data...');
+    assert.strictEqual(sentEdits[1].content.text, '🔄 Memproses data...');
+    if (sentEdits[2]) {
+      // Loop kembali ke frame 0 (⏳)
+      assert.strictEqual(sentEdits[2].content.text, '⏳ Memproses data...');
+    }
+  });
+
+  // 86. Status Animator: Update status dilakukan dengan MENGEDIT pesan status yang sama tanpa spam
+  await itAsync('86. Status Animator: MENGEDIT pesan yang sama dan tidak mengirim pesan WhatsApp baru untuk frame baru', async () => {
+    const { createStatusAnimator } = require('../helpers/statusAnimator');
+    let newMsgCount = 0;
+    const editHistory = [];
+
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        if (content.edit) {
+          editHistory.push(content.text);
+          return { key: content.edit };
+        } else {
+          newMsgCount++;
+          return { key: { remoteJid: chat, id: 'MSG_KEY_SINGLE', fromMe: true } };
+        }
+      }
+    };
+
+    const anim = createStatusAnimator(mockSock, 'chat_single@s.whatsapp.net', null, { intervalMs: 50 });
+    await anim.start('Mengunduh video...', 'download');
+
+    await anim.updateStatus('Download selesai, memeriksa video...', 'download');
+    await anim.updateStatus('Mengoptimalkan video...', 'loading');
+
+    anim.stop();
+
+    // JANGAN mengirim pesan baru untuk update / frame (harus tetap 1 pesan awal)
+    assert.strictEqual(newMsgCount, 1, 'Hanya boleh mengirim 1 pesan awal ke WhatsApp, sisanya MENGEDIT');
+    assert.ok(editHistory.some((txt) => txt.includes('Download selesai, memeriksa video...')));
+    assert.ok(editHistory.some((txt) => txt.includes('Mengoptimalkan video...')));
+  });
+
+  // 87. Status Animator: Status Final (✅ / ❌ / ⚠️) langsung menghentikan animasi dan TIDAK BOLEH berulang
+  await itAsync('87. Status Animator: Status Final (✅/❌/⚠️) langsung menghentikan timer dan tidak pernah berulang', async () => {
+    const { createStatusAnimator } = require('../helpers/statusAnimator');
+    const edits = [];
+
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        if (content.edit) {
+          edits.push(content.text);
+          return { key: content.edit };
+        }
+        return { key: { remoteJid: chat, id: 'FINAL_KEY', fromMe: true } };
+      }
+    };
+
+    const anim = createStatusAnimator(mockSock, 'chat_final@s.whatsapp.net', null, { intervalMs: 50 });
+    await anim.start('Memproses request...', 'loading');
+
+    await new Promise((r) => setTimeout(r, 60));
+    // Pasang status final: Berhasil
+    await anim.setFinalStatus('success', 'Video berhasil diproses.');
+
+    const editsAtFinal = edits.length;
+    const lastEdit = edits[edits.length - 1];
+    assert.strictEqual(lastEdit, '✅ Video berhasil diproses.');
+
+    // Tunggu lagi dan pastikan TIDAK ADA edit lagi dan TIDAK KEMBALI ke ⏳/⚡/🔄
+    await new Promise((r) => setTimeout(r, 120));
+    assert.strictEqual(edits.length, editsAtFinal, 'Tidak boleh ada edit lanjutan setelah status final');
+
+    // Panggilan updateStatus setelah final harus diabaikan
+    await anim.updateStatus('Mencoba edit lagi...', 'loading');
+    assert.strictEqual(edits.length, editsAtFinal, 'updateStatus tidak boleh mengubah status final');
+  });
+
+  // 88. Reusable Helpers: startStatusAnimation, stopStatusAnimation, updateStatus, setFinalStatus dengan finally cleanup
+  await itAsync('88. Status Animator: Reusable controller (start, update, final, stop) & fail-safe cleanup', async () => {
+    const {
+      startStatusAnimation,
+      stopStatusAnimation,
+      updateStatus,
+      setFinalStatus
+    } = require('../helpers/statusAnimator');
+
+    const history = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        if (content.edit) {
+          history.push(content.text);
+          return { key: content.edit };
+        }
+        return { key: { remoteJid: chat, id: 'REUSABLE_KEY', fromMe: true } };
+      }
+    };
+
+    let controller = null;
+    try {
+      controller = await startStatusAnimation(mockSock, 'chat_reuse@s.whatsapp.net', 'Menerima perintah...', 'receiving', null, { intervalMs: 50 });
+      await updateStatus(controller, 'Memproses pesan...', 'receiving');
+      await setFinalStatus(controller, 'error', 'Gagal memproses video.');
+    } catch (_) {
+      // noop
+    } finally {
+      stopStatusAnimation(controller);
+    }
+
+    assert.ok(controller.isStopped, 'Animasi harus stopped setelah finally');
+    assert.ok(controller.hasFinalStatus, 'Status final harus aktif');
+    assert.strictEqual(history[history.length - 1], '❌ Gagal memproses video.');
+  });
+
+  // 89. Spesifikasi Reaction Status: Alur sukses threshold satu arah (⏳ -> 📥 50% -> 🔄 70% -> ⚡ 90% -> ✅ Selesai)
+  await itAsync('89. Reaction Status: Alur sukses threshold satu arah (⏳->📥->🔄->⚡->✅), max 5 reaksi, tanpa interval loop', async () => {
+    const {
+      startReactionProgress,
+      updateReactionProgress,
+      setFinalReaction,
+      stopReaction
+    } = require('../helpers/reactionAnimator');
+
+    const sentReactions = [];
+    const textMessages = [];
+
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        if (content.react) {
+          sentReactions.push({ chat, text: content.react.text, key: content.react.key });
+          return { key: content.react.key };
+        } else {
+          textMessages.push({ chat, content });
+          return { key: { id: 'MOCK_' + Date.now() } };
+        }
+      }
+    };
+
+    const userMsgKey = { remoteJid: 'user_react_1@s.whatsapp.net', id: 'USER_REQ_1', fromMe: false };
+    const userMsg = { key: userMsgKey };
+
+    // 1. Memulai (< 50%) -> ⏳ (1×)
+    startReactionProgress(mockSock, userMsg);
+    assert.strictEqual(sentReactions.length, 1);
+    assert.strictEqual(sentReactions[0].text, '⏳');
+    assert.strictEqual(sentReactions[0].key, userMsgKey);
+
+    // Progress di bawah 50% tidak boleh memicu pergantian reaksi baru
+    await updateReactionProgress(userMsg, 30);
+    assert.strictEqual(sentReactions.length, 1, 'Progress < 50% tetap ⏳, tidak menambah reaksi');
+
+    // 2. 50% -> 📥 (1×)
+    await updateReactionProgress(userMsg, 50);
+    assert.strictEqual(sentReactions.length, 2);
+    assert.strictEqual(sentReactions[1].text, '📥');
+
+    // Progress 55% tidak menambah reaksi baru
+    await updateReactionProgress(userMsg, 55);
+    assert.strictEqual(sentReactions.length, 2, 'Progress 55% tidak menambah reaksi');
+
+    // 3. 70% -> 🔄 (1×)
+    await updateReactionProgress(userMsg, 70);
+    assert.strictEqual(sentReactions.length, 3);
+    assert.strictEqual(sentReactions[2].text, '🔄');
+
+    // 4. 90% -> ⚡ (1×)
+    await updateReactionProgress(userMsg, 90);
+    assert.strictEqual(sentReactions.length, 4);
+    assert.strictEqual(sentReactions[3].text, '⚡');
+
+    // 5. Selesai -> ✅ (1×)
+    await setFinalReaction(mockSock, userMsg, '✅');
+    assert.strictEqual(sentReactions.length, 5);
+    assert.strictEqual(sentReactions[4].text, '✅');
+
+    // Verifikasi aturan teknis:
+    // - Maksimal 5 perubahan reaction untuk proses sukses
+    assert.strictEqual(sentReactions.length, 5, 'Maksimal 5 perubahan reaction untuk proses sukses');
+    // - Tidak ada pesan status/loading baru dari bot
+    assert.strictEqual(textMessages.length, 0, 'JANGAN PERNAH mengirim pesan bot atau loading teks baru');
+
+    stopReaction(userMsg);
+  });
+
+  // 90. Spesifikasi Reaction Status: Threshold satu arah saat progress melompat (48% -> 72% langsung ke 🔄 70%)
+  await itAsync('90. Reaction Status: Threshold satu arah saat meloncat (48% -> 72% langsung 🔄 tanpa 📥)', async () => {
+    const {
+      startReactionProgress,
+      updateReactionProgress,
+      setFinalReaction,
+      stopReaction
+    } = require('../helpers/reactionAnimator');
+
+    const reactionHistory = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        if (content.react) {
+          reactionHistory.push(content.react.text);
+          return { key: content.react.key };
+        }
+      }
+    };
+
+    const userKey = { remoteJid: 'user_jump@s.whatsapp.net', id: 'USER_JUMP_1' };
+
+    // Memulai -> ⏳
+    startReactionProgress(mockSock, userKey);
+    assert.deepStrictEqual(reactionHistory, ['⏳']);
+
+    // Progress 48% (tetap < 50%) -> tidak ada emoji baru
+    await updateReactionProgress(userKey, 48);
+    assert.deepStrictEqual(reactionHistory, ['⏳']);
+
+    // Meloncat langsung ke 72% -> langsung loncat ke 🔄 (70%), JANGAN memasang 📥
+    await updateReactionProgress(userKey, 72);
+    assert.deepStrictEqual(reactionHistory, ['⏳', '🔄'], 'Harus langsung ke 🔄 tanpa memasang 📥');
+
+    // Meloncat ke 95% -> ⚡
+    await updateReactionProgress(userKey, 95);
+    assert.deepStrictEqual(reactionHistory, ['⏳', '🔄', '⚡']);
+
+    // Selesai -> ✅
+    await setFinalReaction(mockSock, userKey, '✅');
+    assert.deepStrictEqual(reactionHistory, ['⏳', '🔄', '⚡', '✅']);
+
+    stopReaction(userKey);
+  });
+
+  // 91. Spesifikasi Reaction Status: Setelah ✅, ❌, atau ⚠️ status terkunci (locked)
+  await itAsync('91. Reaction Status: Terkunci setelah status final (✅/❌/⚠️) dan setiap emoji hanya 1×', async () => {
+    const {
+      startReactionProgress,
+      updateReactionProgress,
+      setFinalReaction,
+      getReactionController,
+      stopReaction
+    } = require('../helpers/reactionAnimator');
+
+    const reactions = [];
+    const mockSock = {
+      sendMessage: async (chat, content) => {
+        if (content.react) {
+          reactions.push(content.react.text);
+          return { key: content.react.key };
+        }
+      }
+    };
+
+    const userKey = { remoteJid: 'user_lock@s.whatsapp.net', id: 'USER_LOCK_1' };
+    const controller = startReactionProgress(mockSock, userKey);
+
+    await updateReactionProgress(userKey, 50);
+    assert.strictEqual(reactions.length, 2); // ⏳, 📥
+
+    // Final ✅
+    await setFinalReaction(mockSock, userKey, '✅');
+    assert.strictEqual(reactions[reactions.length - 1], '✅');
+    assert.strictEqual(controller.isLocked, true, 'Controller harus terkunci');
+
+    // Percobaan update setelah terkunci harus diabaikan
+    await updateReactionProgress(userKey, 70);
+    await updateReactionProgress(userKey, 90);
+    await setFinalReaction(mockSock, userKey, '❌');
+
+    assert.strictEqual(reactions.length, 3, 'Tidak boleh ada reaksi tambahan setelah terkunci');
+    assert.strictEqual(reactions[2], '✅', 'Reaksi final tetap ✅');
+
+    stopReaction(userKey);
+  });
+
+  // 92. Spesifikasi Reaction Status: Gagal (❌) dan Terhenti/System Down (⚠️) serta cleanup registry
+  await itAsync('92. Reaction Status: Error (❌) & System Down (⚠️) langsung terminal dan cleanup di finally', async () => {
+    const {
+      startReactionProgress,
+      setFinalReaction,
+      stopReaction,
+      getReactionController
+    } = require('../helpers/reactionAnimator');
+
+    const errorReactions = [];
+    const mockSock1 = {
+      sendMessage: async (chat, content) => {
+        if (content.react) errorReactions.push(content.react.text);
+        return { key: {} };
+      }
+    };
+
+    const errKey = { remoteJid: 'user_err@s.whatsapp.net', id: 'USER_ERR_1' };
+    try {
+      startReactionProgress(mockSock1, errKey);
+      assert.ok(getReactionController(errKey) !== null, 'Controller harus aktif');
+      throw new Error('Proses gagal mendadak di tengah jalan');
+    } catch (_) {
+      // Langsung gunakan ❌ jika proses gagal
+      await setFinalReaction(mockSock1, errKey, '❌');
+    } finally {
+      stopReaction(errKey);
+    }
+
+    assert.strictEqual(errorReactions[errorReactions.length - 1], '❌');
+    assert.strictEqual(getReactionController(errKey), null, 'Controller harus dibersihkan dari registry');
+
+    // Uji System Down (⚠️)
+    const warnReactions = [];
+    const mockSock2 = {
+      sendMessage: async (chat, content) => {
+        if (content.react) warnReactions.push(content.react.text);
+        return { key: {} };
+      }
+    };
+
+    const downKey = { remoteJid: 'user_down@s.whatsapp.net', id: 'USER_DOWN_1' };
+    startReactionProgress(mockSock2, downKey);
+    await setFinalReaction(mockSock2, downKey, '⚠️');
+    assert.strictEqual(warnReactions[warnReactions.length - 1], '⚠️');
+    stopReaction(downKey);
+    assert.strictEqual(getReactionController(downKey), null);
+  });
+
+
   console.log('\n====================================================');
   console.log(`📊 HASIL TEST: ${passCount} LULUS, ${failCount} GAGAL`);
   console.log('====================================================');
@@ -2383,6 +2732,8 @@ async function runAllTests() {
 
   if (failCount > 0) {
     process.exit(1);
+  } else {
+    process.exit(0);
   }
 }
 
