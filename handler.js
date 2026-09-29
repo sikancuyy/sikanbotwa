@@ -17,6 +17,7 @@ const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMe
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe, getCpuUsagePercent, createProgressBar } = require('./utils');
 const { downloadVideo, downloadAudio } = require('./downloader');
+const { globalJobQueue } = require('./helpers/jobQueue');
 const { processVideoForWhatsApp } = require('./helpers/videoOptimizer');
 const {
   startReactionProgress,
@@ -561,13 +562,6 @@ async function handleMessage(sock, msg, startTime) {
 
         botParticipant = groupMembers.find(isBotParticipant) || null;
         isBotAdmin = Boolean(botParticipant && checkIsAdmin(botParticipant));
-
-        // Debug log status bot admin
-        console.log({
-          botId,
-          botParticipant,
-          botAdminStatus: botParticipant?.admin
-        });
 
         // Cek status sender apakah admin atau superadmin
         const senderParticipant = groupMembers.find((m) => {
@@ -1769,7 +1763,17 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
 
     const tempAudio = path.join(config.tempDir, `audio_${Date.now()}.mp3`);
     try {
-      const dlRes = await scraper.downloadYouTubeAudio(queryText, tempAudio);
+      const dlRes = await globalJobQueue.enqueue(
+        () => scraper.downloadYouTubeAudio(queryText, tempAudio),
+        {
+          userId: sender,
+          type: 'yt_audio',
+          jobKey: `yta_${queryText}`,
+          timeoutMs: 90000,
+          maxRetries: 1,
+          onCleanup: () => deleteFileSafe(tempAudio)
+        }
+      );
       if (dlRes.success && fs.existsSync(tempAudio)) {
         const audioBuffer = fs.readFileSync(tempAudio);
         const cleanTitle = (dlRes.title || 'youtube_music').slice(0, 40).replace(/[\\/:*?"<>|]/g, '').trim() || 'youtube_music';
@@ -1817,7 +1821,17 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
     startReactionProgress(sock, msg);
     let optimizedFilePath = null;
     try {
-      const dlRes = await scraper.downloadYouTubeVideo(queryText, tempVideo);
+      const dlRes = await globalJobQueue.enqueue(
+        () => scraper.downloadYouTubeVideo(queryText, tempVideo),
+        {
+          userId: sender,
+          type: 'yt_video',
+          jobKey: `ytv_${queryText}`,
+          timeoutMs: 120000,
+          maxRetries: 1,
+          onCleanup: () => deleteFileSafe(tempVideo)
+        }
+      );
       if (dlRes.success && fs.existsSync(tempVideo)) {
         await updateReactionProgress(msg, 50);
         await updateReactionProgress(msg, 70);
@@ -4104,6 +4118,7 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
     const uptimeStr = formatUptime(Math.floor((Date.now() - startTime) / 1000));
     const st = userDb.getBotStats(uptimeStr, groupCount);
 
+    const qm = globalJobQueue.getMetrics();
     const statsText = `╭───〔 📊 BOT STATISTICS 〕
 │
 ├ Uptime       : ${st.uptime}
@@ -4115,6 +4130,9 @@ Gunakan *${config.prefix}listuser* atau *${config.prefix}users list* untuk melih
 ├ Downloads    : ${st.downloads.toLocaleString('id-ID')}
 ├ Stickers     : ${st.stickers.toLocaleString('id-ID')}
 ├ TTS          : ${st.tts.toLocaleString('id-ID')}
+│
+├ ⚙️ Queue Worker: ${qm.activeWorkers}/${qm.maxConcurrency} Aktif
+├ ⏳ Queue Antrean: ${qm.queuedJobs} Menunggu
 ╰────────────────`;
 
     commandExecutedSuccessfully = true;

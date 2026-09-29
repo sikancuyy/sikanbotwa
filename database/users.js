@@ -13,14 +13,35 @@ if (!fs.existsSync(dbDir)) {
 }
 
 let dbInstance = null;
+const stmtCache = new Map();
 
 function getDb() {
   if (!dbInstance) {
     dbInstance = new Database(sqlitePath);
     dbInstance.pragma('journal_mode = WAL');
     initTables();
+    try {
+      const { globalJobQueue } = require('../helpers/jobQueue');
+      if (globalJobQueue && typeof globalJobQueue.setDb === 'function') {
+        globalJobQueue.setDb(dbInstance);
+      }
+    } catch (_) {}
   }
   return dbInstance;
+}
+
+/**
+ * Helper prepared statement dengan memory caching otomatis untuk performa tinggi
+ * @param {string} sql
+ * @returns {import('better-sqlite3').Statement}
+ */
+function prep(sql) {
+  let s = stmtCache.get(sql);
+  if (!s) {
+    s = getDb().prepare(sql);
+    stmtCache.set(sql, s);
+  }
+  return s;
 }
 
 function initTables() {
@@ -77,6 +98,22 @@ function initTables() {
       updated_at INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_lid_phone ON lid_mappings(phone);
+
+    CREATE TABLE IF NOT EXISTS job_queue_logs (
+      id TEXT PRIMARY KEY,
+      job_key TEXT,
+      type TEXT,
+      user_id TEXT,
+      status TEXT,
+      attempts INTEGER DEFAULT 0,
+      max_retries INTEGER DEFAULT 2,
+      created_at INTEGER,
+      started_at INTEGER,
+      completed_at INTEGER,
+      error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_jq_status ON job_queue_logs(status);
+    CREATE INDEX IF NOT EXISTS idx_jq_key ON job_queue_logs(job_key);
   `);
 
   // Pastikan kolom-kolom baru tersedia pada tabel users
@@ -254,8 +291,7 @@ function saveLidMapping(lid, phone) {
   if (!cleanLid || !cleanPhone || !isValidUserNumber(cleanPhone)) return;
 
   try {
-    const db = getDb();
-    db.prepare(`
+    prep(`
       INSERT INTO lid_mappings (lid, phone, updated_at)
       VALUES (?, ?, ?)
       ON CONFLICT(lid) DO UPDATE SET phone = excluded.phone, updated_at = excluded.updated_at
@@ -272,8 +308,7 @@ function getPhoneByLid(lid) {
   if (!cleanLid) return null;
 
   try {
-    const db = getDb();
-    const row = db.prepare('SELECT phone FROM lid_mappings WHERE lid = ?').get(cleanLid);
+    const row = prep('SELECT phone FROM lid_mappings WHERE lid = ?').get(cleanLid);
     return row ? row.phone : null;
   } catch (_) {
     return null;
@@ -288,8 +323,7 @@ function getLidByPhone(phone) {
   const cleanPhone = extractPhone(phone) || String(phone).replace(/[^0-9]/g, '');
   if (!cleanPhone) return null;
   try {
-    const db = getDb();
-    const row = db.prepare('SELECT lid FROM lid_mappings WHERE phone = ? ORDER BY updated_at DESC LIMIT 1').get(cleanPhone);
+    const row = prep('SELECT lid FROM lid_mappings WHERE phone = ? ORDER BY updated_at DESC LIMIT 1').get(cleanPhone);
     return row ? row.lid : null;
   } catch (_) {
     return null;
@@ -321,17 +355,21 @@ function isOwnerPhone(phone) {
  * Mencari ID kosong terkecil mulai dari 1 (smallest available ID / first available ID)
  */
 function getSmallestAvailableId() {
-  const db = getDb();
-  const rows = db.prepare('SELECT id FROM users ORDER BY id ASC').all();
-  let candidate = 1;
-  for (const row of rows) {
-    if (row.id === candidate) {
-      candidate++;
-    } else if (row.id > candidate) {
-      return candidate;
-    }
-  }
-  return candidate;
+  // Cek apakah ID 1 belum terpakai
+  const hasId1 = prep('SELECT id FROM users WHERE id = 1').get();
+  if (!hasId1) return 1;
+
+  // Temukan gap ID terkecil menggunakan query B-tree index
+  const gap = prep(`
+    SELECT (t1.id + 1) AS next_id
+    FROM users t1
+    WHERE NOT EXISTS (SELECT 1 FROM users t2 WHERE t2.id = t1.id + 1)
+      AND t1.id > 0
+    ORDER BY t1.id ASC
+    LIMIT 1
+  `).get();
+
+  return gap ? gap.next_id : 1;
 }
 
 /**
@@ -415,7 +453,7 @@ function getUser(rawJid, pushName = '') {
   const todayStr = getTodayDateString();
 
   // 1. Cari di tabel users (terdaftar)
-  let user = db.prepare('SELECT * FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
+  let user = prep('SELECT * FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
 
   const isOwner = isOwnerPhone(phone) || (user && isOwnerPhone(user.phone));
 
@@ -423,11 +461,11 @@ function getUser(rawJid, pushName = '') {
   if (isOwner && !user) {
     const id = getSmallestAvailableId();
     const now = Date.now();
-    db.prepare(`
+    prep(`
       INSERT OR REPLACE INTO users (id, phone, jid, name, kota, umur, registered, registered_at, status, limit_val, limit_type, role, unlimited, premium, hits_today, last_reset_date, created_at, updated_at)
       VALUES (?, ?, ?, ?, 'Lhokseumawe', 20, 1, ?, 'Aktif', 30, 'unlimited', 'owner', 1, 1, 0, ?, ?, ?)
     `).run(id, phone, jid, config.owner.name, now, todayStr, now, now);
-    user = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    user = prep('SELECT * FROM users WHERE id = ?').get(id);
     return user;
   }
 
@@ -436,7 +474,7 @@ function getUser(rawJid, pushName = '') {
 
     // A. Cek apakah masa aktif Premium sudah kedaluwarsa
     if (user.premium === 1 && user.premium_expires_at > 0 && now > user.premium_expires_at && !isOwner) {
-      db.prepare(`
+      prep(`
         UPDATE users
         SET premium = 0, premium_package = '', limit_type = 'limited', unlimited = 0,
             role = CASE WHEN role = 'Premium' THEN 'User' ELSE role END, updated_at = ?
@@ -451,7 +489,7 @@ function getUser(rawJid, pushName = '') {
 
     // B. Cek reset hit harian (Pukul 00:00 WIB)
     if (user.last_reset_date !== todayStr) {
-      db.prepare('UPDATE users SET hits_today = 0, last_reset_date = ? WHERE id = ?').run(todayStr, user.id);
+      prep('UPDATE users SET hits_today = 0, last_reset_date = ? WHERE id = ?').run(todayStr, user.id);
       user.hits_today = 0;
       user.last_reset_date = todayStr;
     }
@@ -460,10 +498,10 @@ function getUser(rawJid, pushName = '') {
       user.role = 'owner';
       user.limit_type = 'unlimited';
       user.unlimited = 1;
-      db.prepare("UPDATE users SET role = 'owner', limit_type = 'unlimited', unlimited = 1, registered = 1 WHERE id = ?").run(user.id);
+      prep("UPDATE users SET role = 'owner', limit_type = 'unlimited', unlimited = 1, registered = 1 WHERE id = ?").run(user.id);
     }
     if (pushName && !user.name) {
-      db.prepare('UPDATE users SET name = ?, updated_at = ? WHERE id = ?').run(pushName, Date.now(), user.id);
+      prep('UPDATE users SET name = ?, updated_at = ? WHERE id = ?').run(pushName, Date.now(), user.id);
       user.name = pushName;
     }
 
@@ -472,13 +510,13 @@ function getUser(rawJid, pushName = '') {
   }
 
   // 2. User belum terdaftar (Guest)
-  let guest = db.prepare('SELECT * FROM guest_limits WHERE phone = ?').get(phone);
+  let guest = prep('SELECT * FROM guest_limits WHERE phone = ?').get(phone);
   const now = Date.now();
   if (!guest) {
-    db.prepare('INSERT OR IGNORE INTO guest_limits (phone, jid, usage_count, hits_today, last_reset_date, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(phone, jid, todayStr, now);
+    prep('INSERT OR IGNORE INTO guest_limits (phone, jid, usage_count, hits_today, last_reset_date, updated_at) VALUES (?, ?, 0, 0, ?, ?)').run(phone, jid, todayStr, now);
     guest = { phone, jid, usage_count: 0, hits_today: 0, last_reset_date: todayStr, updated_at: now };
   } else if (guest.last_reset_date !== todayStr) {
-    db.prepare('UPDATE guest_limits SET hits_today = 0, last_reset_date = ? WHERE phone = ?').run(todayStr, phone);
+    prep('UPDATE guest_limits SET hits_today = 0, last_reset_date = ? WHERE phone = ?').run(todayStr, phone);
     guest.hits_today = 0;
     guest.last_reset_date = todayStr;
   }
@@ -667,18 +705,18 @@ function incrementUsage(rawPhoneOrJid, amount = 1) {
   const now = Date.now();
   const todayStr = getTodayDateString();
 
-  const user = db.prepare('SELECT id, hits_today, last_reset_date FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
+  const user = prep('SELECT id, hits_today, last_reset_date FROM users WHERE phone = ? OR jid = ?').get(phone, jid);
   if (user) {
     const hitsToday = (user.last_reset_date === todayStr) ? (user.hits_today || 0) + amount : amount;
-    db.prepare(`
+    prep(`
       UPDATE users
       SET usage_count = usage_count + ?, hits_today = ?, last_reset_date = ?, updated_at = ?
       WHERE id = ?
     `).run(amount, hitsToday, todayStr, now, user.id);
   } else {
-    const guest = db.prepare('SELECT phone, hits_today, last_reset_date FROM guest_limits WHERE phone = ?').get(phone);
+    const guest = prep('SELECT phone, hits_today, last_reset_date FROM guest_limits WHERE phone = ?').get(phone);
     const hitsToday = (guest && guest.last_reset_date === todayStr) ? (guest.hits_today || 0) + amount : amount;
-    db.prepare(`
+    prep(`
       INSERT INTO guest_limits (phone, jid, usage_count, hits_today, last_reset_date, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(phone) DO UPDATE SET
@@ -992,7 +1030,7 @@ function logCommand(data) {
   const isFailed = status === 'FAILED' ? 1 : 0;
 
   try {
-    db.prepare(`
+    prep(`
       INSERT INTO command_logs (
         timestamp, user_id, number, username, command, arguments,
         chat_type, chat_id, group_name, status, execution_time, error
@@ -1018,7 +1056,7 @@ function logCommand(data) {
   // Update statistik user
   try {
     getUser(jid, data.username);
-    db.prepare(`
+    prep(`
       UPDATE users
       SET total_commands = COALESCE(total_commands, 0) + 1,
           success_commands = COALESCE(success_commands, 0) + ?,

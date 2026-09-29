@@ -146,6 +146,27 @@ function deleteFileSafe(filePath) {
 }
 
 /**
+ * Mematikan proses child beserta seluruh sub-prosesnya (process tree) secara tuntas.
+ * Mencegah zombie/hanging process pada Windows (misal: yt-dlp yang memanggil ffmpeg).
+ * @param {import('child_process').ChildProcess} proc Objek ChildProcess
+ */
+function killProcessTree(proc) {
+  if (!proc || !proc.pid) return;
+  try {
+    if (process.platform === 'win32') {
+      const { execSync } = require('child_process');
+      execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+    } else {
+      proc.kill('SIGKILL');
+    }
+  } catch (_) {
+    try {
+      proc.kill('SIGKILL');
+    } catch (__) {}
+  }
+}
+
+/**
  * Format bytes ke ukuran yang mudah dibaca (MB, KB, GB).
  * @param {number} bytes Ukuran dalam bytes
  * @returns {string} String ukuran terformat
@@ -263,6 +284,7 @@ module.exports = {
   extractUrl,
   isValidVideoUrl,
   deleteFileSafe,
+  killProcessTree,
   formatBytes,
   formatUptime,
   printBanner,

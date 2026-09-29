@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
-const { resolveBinary, deleteFileSafe, log } = require('../utils');
+const { resolveBinary, deleteFileSafe, killProcessTree, log } = require('../utils');
 
 /**
  * Concurrency limiter khusus proses FFmpeg untuk mencegah VPS CPU 100% / OOM.
@@ -85,7 +85,7 @@ function probeVideo(filePath) {
     const proc = spawn(ffprobeBin, args, { windowsHide: true });
 
     const timer = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch (_) {}
+      try { killProcessTree(proc); } catch (_) {}
       resolve(null);
     }, 15000);
 
@@ -289,7 +289,7 @@ function executeCompression(inputPath, meta, targetMaxBytes, requestId, options 
       const proc = spawn(ffmpegBin, args, { windowsHide: true });
 
       const timer = setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch (_) {}
+        try { killProcessTree(proc); } catch (_) {}
         deleteFileSafe(outputPath);
         reject(new Error('Kompresi video timeout (>180 detik).'));
       }, 180000);

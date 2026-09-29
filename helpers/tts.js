@@ -6,6 +6,7 @@ const execPromise = util.promisify(exec);
 const axios = require('axios');
 const googleTTS = require('google-tts-api');
 const config = require('../config');
+const { resolveBinary } = require('../utils');
 
 // Daftar kode bahasa yang didukung umum
 const SUPPORTED_LANGS = {
@@ -129,7 +130,8 @@ async function generateTTS(text, lang = 'id') {
 async function convertToVoiceNote(inputMp3Path) {
   const outputOpusPath = inputMp3Path.replace(/\.mp3$/i, '') + '.opus';
   try {
-    const ffmpegCmd = `ffmpeg -y -i "${inputMp3Path}" -c:a libopus -b:a 32k -vbr on "${outputOpusPath}"`;
+    const ffmpegBin = resolveBinary(config.ffmpeg) || 'ffmpeg';
+    const ffmpegCmd = `"${ffmpegBin}" -y -i "${inputMp3Path}" -c:a libopus -b:a 32k -vbr on "${outputOpusPath}"`;
     await execPromise(ffmpegCmd);
     if (fs.existsSync(outputOpusPath) && fs.statSync(outputOpusPath).size > 0) {
       return {

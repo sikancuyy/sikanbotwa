@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const config = require('./config');
-const { resolveBinary, deleteFileSafe, log } = require('./utils');
+const { resolveBinary, deleteFileSafe, killProcessTree, log } = require('./utils');
 const { processVideoForWhatsApp } = require('./helpers/videoOptimizer');
 
 /**
@@ -149,7 +149,7 @@ function getVideoMetadata(url) {
     const proc = spawn(ytdlpBin, args, { windowsHide: true });
 
     const timer = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch (_) {}
+      try { killProcessTree(proc); } catch (_) {}
       resolve({ title: 'Video WhatsApp', duration: null });
     }, 12000);
 
@@ -248,7 +248,7 @@ function executeDownload(url, id) {
     let isTimedOut = false;
     const timeout = setTimeout(() => {
       isTimedOut = true;
-      try { proc.kill('SIGKILL'); } catch (_) {}
+      try { killProcessTree(proc); } catch (_) {}
       cleanStrayTempFiles(uniquePrefix);
       reject(new Error('TIMEOUT'));
     }, config.downloadTimeoutMs || 120000);
@@ -377,7 +377,7 @@ function executeDownloadAudio(url, id) {
     let isTimedOut = false;
     const timeout = setTimeout(() => {
       isTimedOut = true;
-      try { proc.kill('SIGKILL'); } catch (_) {}
+      try { killProcessTree(proc); } catch (_) {}
       cleanStrayTempFiles(uniquePrefix);
       reject(new Error('TIMEOUT'));
     }, config.downloadTimeoutMs || 120000);
@@ -448,26 +448,41 @@ function executeDownloadAudio(url, id) {
   });
 }
 
+const { globalJobQueue } = require('./helpers/jobQueue');
+
 /**
- * Menjalankan proses download video secara konkuren tanpa antrean global yang saling memblokir antar user.
+ * Menjalankan proses download video secara terkelola melalui JobQueue
+ * dengan proteksi timeout, deduplikasi, dan retry terbatas.
  * @param {string} url URL video
  * @param {string} id ID transaksi unik
  * @param {string} [userId='guest'] ID user pemohon
  * @returns {Promise<{ filePath: string, title: string, fileSize: number }>}
  */
 function downloadVideo(url, id, userId = 'guest') {
-  return downloadQueue.enqueue(() => executeDownload(url, id), userId);
+  return globalJobQueue.enqueue(() => executeDownload(url, id), {
+    userId,
+    type: 'download_video',
+    jobKey: `dl_vid_${url}`,
+    timeoutMs: config.downloadTimeoutMs || 120000,
+    maxRetries: 1
+  });
 }
 
 /**
- * Menjalankan proses download audio murni secara konkuren.
+ * Menjalankan proses download audio murni secara terkelola melalui JobQueue.
  * @param {string} url URL media
  * @param {string} id ID transaksi unik
  * @param {string} [userId='guest'] ID user pemohon
  * @returns {Promise<{ filePath: string, title: string, fileSize: number }>}
  */
 function downloadAudio(url, id, userId = 'guest') {
-  return downloadQueue.enqueue(() => executeDownloadAudio(url, id), userId);
+  return globalJobQueue.enqueue(() => executeDownloadAudio(url, id), {
+    userId,
+    type: 'download_audio',
+    jobKey: `dl_aud_${url}`,
+    timeoutMs: config.downloadTimeoutMs || 120000,
+    maxRetries: 1
+  });
 }
 
 module.exports = {
@@ -476,5 +491,6 @@ module.exports = {
   downloadVideo,
   downloadAudio,
   downloadQueue,
+  globalJobQueue,
   processVideoForWhatsApp
 };

@@ -35,6 +35,7 @@ const {
   shouldIgnoreMessage,
   isDuplicateGroupEvent
 } = require('./helpers/messageDeduplicator');
+const { globalJobQueue } = require('./helpers/jobQueue');
 
 // Waktu mulai bot untuk kalkulasi uptime
 const startTime = Date.now();
@@ -374,25 +375,46 @@ function initApiServer() {
   app.use(cors());
   app.use(express.json());
 
-  // Health check & status bot
+  // Health check, queue monitoring & status bot
   app.get('/api/status', (req, res) => {
+    const mem = process.memoryUsage();
     res.json({
       status: true,
       botReady: !!currentSock,
       uptime: formatUptime(process.uptime()),
-      botName: config.botName
+      botName: config.botName,
+      queue: globalJobQueue.getMetrics(),
+      memory: {
+        rss: formatBytes(mem.rss),
+        heapUsed: formatBytes(mem.heapUsed),
+        heapTotal: formatBytes(mem.heapTotal)
+      }
     });
   });
 
-  // Endpoint untuk menerima kiriman pesan ke WhatsApp grup atau kontak
+  // Endpoint untuk menerima kiriman pesan ke WhatsApp grup atau kontak dengan timeout protection
   app.post('/api/send-group', async (req, res) => {
     try {
       const { groupId, message } = req.body;
 
-      if (!groupId || !message) {
+      if (!groupId || typeof groupId !== 'string' || !groupId.trim()) {
         return res.status(400).json({
           status: false,
-          error: 'Parameter "groupId" dan "message" wajib diisi!'
+          error: 'Parameter "groupId" wajib diisi dengan string ID grup yang valid!'
+        });
+      }
+
+      if (!message || typeof message !== 'string' || !message.trim()) {
+        return res.status(400).json({
+          status: false,
+          error: 'Parameter "message" wajib diisi dengan teks pesan!'
+        });
+      }
+
+      if (message.length > 4096) {
+        return res.status(400).json({
+          status: false,
+          error: 'Parameter "message" terlalu panjang (maksimal 4096 karakter)!'
         });
       }
 
@@ -409,7 +431,13 @@ function initApiServer() {
         targetJid = targetJid + '@g.us';
       }
 
-      await currentSock.sendMessage(targetJid, { text: message });
+      // Eksekusi kirim pesan dengan timeout guard 10 detik agar API tidak menggantung
+      const sendPromise = currentSock.sendMessage(targetJid, { text: message.trim() });
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('TIMEOUT')), 10000);
+      });
+
+      await Promise.race([sendPromise, timeoutPromise]);
 
       log('SUCCESS', `[API] Berhasil mengirim pesan notifikasi ke: ${targetJid}`);
       return res.json({
@@ -417,10 +445,16 @@ function initApiServer() {
         message: 'Pesan berhasil terkirim ke grup!'
       });
     } catch (err) {
-      log('ERROR', `[API Error] Gagal mengirim pesan via API: ${err.message}`);
-      return res.status(500).json({
+      const isTimeout = err.message === 'TIMEOUT' || err.message?.includes('TIMEOUT');
+      const statusCode = isTimeout ? 504 : 500;
+      const errorMsg = isTimeout
+        ? 'Pengiriman pesan gagal: Timeout menunggu respons server WhatsApp (> 10 detik).'
+        : `Gagal mengirim pesan via API: ${err.message}`;
+
+      log('ERROR', `[API Error] ${errorMsg}`);
+      return res.status(statusCode).json({
         status: false,
-        error: err.message
+        error: errorMsg
       });
     }
   });
