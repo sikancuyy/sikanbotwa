@@ -7,7 +7,9 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  Browsers,
+  DEFAULT_CONNECTION_CONFIG
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -113,19 +115,20 @@ async function startBot() {
     const state = authState.state;
     saveCreds = authState.saveCreds;
     // Ambil versi Baileys dengan timeout fail-safe agar tidak blocking di VPS
-    let version = [2, 3000, 1015901307];
+    // Default fallback menggunakan versi valid dari konfigurasi default Baileys (bukan versi usang)
+    let version = DEFAULT_CONNECTION_CONFIG?.version || [2, 3000, 1043857760];
     let isLatest = false;
     try {
       const versionInfo = await Promise.race([
-        fetchLatestBaileysVersion({ timeout: 5000 }),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout 5s mengambil versi online')), 5000))
+        fetchLatestBaileysVersion({ timeout: 7000 }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout 7s mengambil versi online')), 7000))
       ]);
       if (versionInfo?.version) {
         version = versionInfo.version;
         isLatest = versionInfo.isLatest;
       }
     } catch (vErr) {
-      log('WARN', `Gagal fetch versi Baileys online (${vErr.message}), menggunakan versi fallback lokal.`);
+      log('WARN', `Gagal fetch versi Baileys online (${vErr.message}), menggunakan versi fallback bawaan.`);
     }
     log('INFO', `Menggunakan Baileys v${version.join('.')} (Latest: ${isLatest})`);
 
@@ -143,7 +146,7 @@ async function startBot() {
       printQRInTerminal: false,
       auth: state,
       generateHighQualityLinkPreview: false,
-      browser: ['SikanBot', 'Chrome', '122.0.0'],
+      browser: Browsers.ubuntu('Chrome'),
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 25000
