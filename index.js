@@ -112,8 +112,30 @@ async function startBot() {
     const authState = await useMultiFileAuthState(config.sessionDir);
     const state = authState.state;
     saveCreds = authState.saveCreds;
-    const { version, isLatest } = await fetchLatestBaileysVersion();
+    // Ambil versi Baileys dengan timeout fail-safe agar tidak blocking di VPS
+    let version = [2, 3000, 1015901307];
+    let isLatest = false;
+    try {
+      const versionInfo = await Promise.race([
+        fetchLatestBaileysVersion({ timeout: 5000 }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout 5s mengambil versi online')), 5000))
+      ]);
+      if (versionInfo?.version) {
+        version = versionInfo.version;
+        isLatest = versionInfo.isLatest;
+      }
+    } catch (vErr) {
+      log('WARN', `Gagal fetch versi Baileys online (${vErr.message}), menggunakan versi fallback lokal.`);
+    }
     log('INFO', `Menggunakan Baileys v${version.join('.')} (Latest: ${isLatest})`);
+
+    // Deteksi apakah sesi sudah ada atau membutuhkan scan QR baru
+    if (!state?.creds?.registered) {
+      log('INFO', 'Sesi belum terdaftar. Menyiapkan QR Code login WhatsApp...');
+    } else {
+      const savedNumber = state?.creds?.me?.id ? '+' + state.creds.me.id.split(':')[0] : 'Tersimpan';
+      log('INFO', `Sesi kredensial ditemukan (${savedNumber}). Menghubungkan langsung tanpa perlu QR...`);
+    }
 
     sock = makeWASocket({
       version,
@@ -121,7 +143,10 @@ async function startBot() {
       printQRInTerminal: false,
       auth: state,
       generateHighQualityLinkPreview: false,
-      browser: ['SikanBot', 'Chrome', '122.0.0']
+      browser: ['SikanBot', 'Chrome', '122.0.0'],
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 25000
     });
 
     activeSock = sock;
