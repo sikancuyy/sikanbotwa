@@ -266,7 +266,7 @@ async function startBot() {
       const botNumber = rawNumber ? '+' + rawNumber.split(':')[0] : 'Unknown';
 
       printBanner({
-        status: 'Online & Connected 🟢',
+        status: 'Online & Connected SikanBOT 🟢',
         number: botNumber,
         mode: 'Multi-Feature Ready'
       });
