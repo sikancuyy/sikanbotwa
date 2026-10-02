@@ -14,6 +14,30 @@ function isTransientError(err) {
   const code = String(err.code || '').toUpperCase();
   const status = err.response?.status || err.status;
 
+  // Error permanen / non-transient tidak boleh di-retry
+  if (
+    err.category === 'CLOUDFLARE' ||
+    err.category === 'AGE_RESTRICTED' ||
+    err.category === 'LOGIN_REQUIRED' ||
+    err.category === 'NOT_FOUND' ||
+    err.category === 'INVALID_URL' ||
+    err.category === 'FILE_ERROR' ||
+    msg.includes('cloudflare') ||
+    msg.includes('turnstile') ||
+    msg.includes('age-restricted') ||
+    msg.includes('confirm your age') ||
+    msg.includes('sign in to confirm') ||
+    msg.includes('login required') ||
+    msg.includes('unavailable') ||
+    msg.includes('private video') ||
+    msg.includes('invalid_url') ||
+    msg.includes('file_too_large') ||
+    status === 404 ||
+    status === 400
+  ) {
+    return false;
+  }
+
   // Error kode jaringan sementara
   if (['ECONNRESET', 'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE'].includes(code)) {
     return true;
@@ -32,6 +56,9 @@ function isTransientError(err) {
     msg.includes('socket hang up') ||
     msg.includes('econnreset') ||
     msg.includes('etimedout') ||
+    msg.includes('enotfound') ||
+    msg.includes('eai_again') ||
+    msg.includes('econnrefused') ||
     msg.includes('service unavailable') ||
     (msg.includes('server') && (msg.includes('sibuk') || msg.includes('busy') || msg.includes('down')))
   ) {

@@ -16,9 +16,16 @@ const scraper = require('./lib/scraper');
 const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
 const { formatBytes, formatUptime, log, deleteFileSafe, getCpuUsagePercent, createProgressBar } = require('./utils');
-const { downloadVideo, downloadAudio } = require('./downloader');
+const { downloadVideo, downloadAudio, downloadYouTubeAudio, downloadYouTubeVideo } = require('./downloader');
 const { globalJobQueue } = require('./helpers/jobQueue');
 const { processVideoForWhatsApp } = require('./helpers/videoOptimizer');
+const {
+  classifyError,
+  getUserMessageForCategory,
+  logServiceEvent,
+  logServiceError,
+  ERROR_CATEGORIES
+} = require('./helpers/errorHandler');
 const {
   startReactionProgress,
   startReactionAnimation,
@@ -960,12 +967,13 @@ async function handleMessage(sock, msg, startTime) {
           }
         } catch (e) {
           downloadSuccess = false;
-          downloadError = e.message || 'Gagal memproses media';
+          const classified = classifyError(e, { platform: platformInfo?.name || 'media' });
+          downloadError = classified.detail || e.message || 'Gagal memproses media';
           commandHasFailed = true;
           lastCommandError = downloadError;
           if (!isGroup) {
             try {
-              await reply(`❌ Gagal mengunduh media [${platformInfo.name}]: ${downloadError}`);
+              await reply(getUserMessageForCategory(classified.category, { platform: platformInfo?.name || 'media' }));
             } catch (_) {}
           }
         } finally {
@@ -1024,6 +1032,11 @@ async function handleMessage(sock, msg, startTime) {
     'ytm': 'ytm',
     'ytmp3': 'ytm',
     'playmp3': 'ytm',
+    'yt': 'play2',
+    'ytv': 'play2',
+    'ytmp4': 'play2',
+    'ytvideo': 'play2',
+    'video': 'play2',
     'instagram': 'ig',
     'igdl': 'ig',
     'igpost': 'ig',
@@ -1362,6 +1375,16 @@ async function handleMessage(sock, msg, startTime) {
       hour12: false
     }) + ' WIB';
 
+    const { downloadQueue } = require('./downloader');
+    const activeDlCount = downloadQueue.activeCount || 0;
+    const queuedJobsCount = globalJobQueue.waitQueue?.length || 0;
+    const activeJobsCount = globalJobQueue.activeJobs?.size || 0;
+    let tempFilesCount = 0;
+    try {
+      if (fs.existsSync(config.tempDir)) tempFilesCount += fs.readdirSync(config.tempDir).length;
+      if (fs.existsSync(config.downloadDir)) tempFilesCount += fs.readdirSync(config.downloadDir).filter(f => f !== '.gitkeep').length;
+    } catch (_) {}
+
     const fullPingText = `╭───〔 🏓 *SYSTEM STATUS DETAIL* 〕
 │
 │ ⚡ *Respon:* ${displayLatency} ms (${latencyBadge})
@@ -1381,6 +1404,12 @@ async function handleMessage(sock, msg, startTime) {
 │ • *CPU:* ${cpuModel}
 │ • *Core:* ${cpuCores} Cores @ ${cpuSpeed} MHz
 │ • *Beban CPU:* ${cpuPercent}% [${createProgressBar(cpuPercent, 10)}]
+│
+├─〔 📥 *DOWNLOAD & QUEUE MONITOR* 〕
+│ • *Download Aktif:* ${activeDlCount} proses
+│ • *Job Aktif:* ${activeJobsCount} tugas
+│ • *Antrean Job:* ${queuedJobsCount} antrean
+│ • *File Temporary:* ${tempFilesCount} file tersisa
 │
 ├─〔 🖥️ *SERVER & OS* 〕
 │ • *OS:* ${os.type()} (${process.platform} ${os.arch()})
@@ -1761,36 +1790,50 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       );
     }
 
-    const tempAudio = path.join(config.tempDir, `audio_${Date.now()}.mp3`);
+    const reqId = `yta_${Date.now()}`;
+    startReactionProgress(sock, msg);
+    let downloadedFilePath = null;
     try {
-      const dlRes = await globalJobQueue.enqueue(
-        () => scraper.downloadYouTubeAudio(queryText, tempAudio),
-        {
-          userId: sender,
-          type: 'yt_audio',
-          jobKey: `yta_${queryText}`,
-          timeoutMs: 90000,
-          maxRetries: 1,
-          onCleanup: () => deleteFileSafe(tempAudio)
-        }
-      );
-      if (dlRes.success && fs.existsSync(tempAudio)) {
-        const audioBuffer = fs.readFileSync(tempAudio);
-        const cleanTitle = (dlRes.title || 'youtube_music').slice(0, 40).replace(/[\\/:*?"<>|]/g, '').trim() || 'youtube_music';
+      await updateReactionProgress(msg, 30);
+      const dlRes = await downloadAudio(queryText, reqId, sender);
+      downloadedFilePath = dlRes?.filePath;
+
+      if (!downloadedFilePath || !fs.existsSync(downloadedFilePath) || fs.statSync(downloadedFilePath).size === 0) {
+        throw new Error('FILE_NOT_FOUND');
+      }
+
+      await updateReactionProgress(msg, 70);
+      const cleanTitle = (dlRes.title || 'youtube_music').slice(0, 50).replace(/[\\/:*?"<>|]/g, '').trim() || 'youtube_music';
+
+      await updateReactionProgress(msg, 90);
+      try {
+        await sock.sendMessage(chatId, {
+          audio: { url: downloadedFilePath },
+          mimetype: 'audio/mpeg',
+          fileName: `${cleanTitle}.mp3`,
+          ptt: false
+        }, { quoted: msg });
+      } catch (_) {
+        const audioBuffer = fs.readFileSync(downloadedFilePath);
         await sock.sendMessage(chatId, {
           audio: audioBuffer,
           mimetype: 'audio/mpeg',
           fileName: `${cleanTitle}.mp3`,
           ptt: false
         }, { quoted: msg });
-        deleteFileSafe(tempAudio);
-        commandExecutedSuccessfully = true;
-      } else {
-        reply('❌ Gagal mengunduh audio YouTube.');
       }
+
+      await setFinalReaction(sock, msg, '✅');
+      logServiceEvent('YT', 'Upload completed');
+      commandExecutedSuccessfully = true;
     } catch (e) {
-      deleteFileSafe(tempAudio);
-      reply(`❌ Error: ${e.message}`);
+      await setFinalReaction(sock, msg, '❌');
+      const classified = classifyError(e, { platform: 'YouTube', action: 'audio' });
+      logServiceError('YT', e, queryText);
+      reply(getUserMessageForCategory(classified.category, { platform: 'YouTube', action: 'audio' }));
+    } finally {
+      stopReaction(msg);
+      deleteFileSafe(downloadedFilePath);
     }
     return;
   }
@@ -1817,56 +1860,52 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       );
     }
 
-    const tempVideo = path.join(config.tempDir, `vid_${Date.now()}.mp4`);
+    const reqId = `ytv_${Date.now()}`;
     startReactionProgress(sock, msg);
+    let downloadedFilePath = null;
     let optimizedFilePath = null;
     try {
-      const dlRes = await globalJobQueue.enqueue(
-        () => scraper.downloadYouTubeVideo(queryText, tempVideo),
-        {
-          userId: sender,
-          type: 'yt_video',
-          jobKey: `ytv_${queryText}`,
-          timeoutMs: 120000,
-          maxRetries: 1,
-          onCleanup: () => deleteFileSafe(tempVideo)
-        }
-      );
-      if (dlRes.success && fs.existsSync(tempVideo)) {
-        await updateReactionProgress(msg, 50);
-        await updateReactionProgress(msg, 70);
-        const opt = await processVideoForWhatsApp(tempVideo, `yt_${Date.now()}`);
-        optimizedFilePath = opt.filePath;
+      await updateReactionProgress(msg, 30);
+      const dlRes = await downloadVideo(queryText, reqId, sender);
+      downloadedFilePath = dlRes?.filePath;
 
-        await updateReactionProgress(msg, 90);
-        try {
-          await sock.sendMessage(chatId, {
-            video: { url: optimizedFilePath },
-            caption: `🎥 *YouTube Video:* ${dlRes.title}`,
-            mimetype: 'video/mp4'
-          }, { quoted: msg });
-        } catch (_) {
-          const vidBuffer = fs.readFileSync(optimizedFilePath);
-          await sock.sendMessage(chatId, {
-            video: vidBuffer,
-            caption: `🎥 *YouTube Video:* ${dlRes.title}`,
-            mimetype: 'video/mp4'
-          }, { quoted: msg });
-        }
-
-        await setFinalReaction(sock, msg, '✅');
-        commandExecutedSuccessfully = true;
-      } else {
-        await setFinalReaction(sock, msg, '❌');
-        reply('❌ Gagal mengunduh video YouTube.');
+      if (!downloadedFilePath || !fs.existsSync(downloadedFilePath) || fs.statSync(downloadedFilePath).size === 0) {
+        throw new Error('FILE_NOT_FOUND');
       }
+
+      await updateReactionProgress(msg, 60);
+      const opt = await processVideoForWhatsApp(downloadedFilePath, reqId);
+      optimizedFilePath = opt.filePath;
+      const finalSize = opt.fileSize || dlRes.fileSize;
+
+      await updateReactionProgress(msg, 90);
+      try {
+        await sock.sendMessage(chatId, {
+          video: { url: optimizedFilePath },
+          caption: `🎥 *YouTube Video:* ${dlRes.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+          mimetype: 'video/mp4'
+        }, { quoted: msg });
+      } catch (_) {
+        const vidBuffer = fs.readFileSync(optimizedFilePath);
+        await sock.sendMessage(chatId, {
+          video: vidBuffer,
+          caption: `🎥 *YouTube Video:* ${dlRes.title}\n📦 *Ukuran:* ${formatBytes(finalSize)}`,
+          mimetype: 'video/mp4'
+        }, { quoted: msg });
+      }
+
+      await setFinalReaction(sock, msg, '✅');
+      logServiceEvent('YT', 'Upload completed');
+      commandExecutedSuccessfully = true;
     } catch (e) {
       await setFinalReaction(sock, msg, '❌');
-      reply(`❌ Error: ${e.message}`);
+      const classified = classifyError(e, { platform: 'YouTube', action: 'video' });
+      logServiceError('YT', e, queryText);
+      reply(getUserMessageForCategory(classified.category, { platform: 'YouTube', action: 'video' }));
     } finally {
       stopReaction(msg);
-      deleteFileSafe(tempVideo);
-      if (optimizedFilePath && optimizedFilePath !== tempVideo) {
+      deleteFileSafe(downloadedFilePath);
+      if (optimizedFilePath && optimizedFilePath !== downloadedFilePath) {
         deleteFileSafe(optimizedFilePath);
       }
     }
@@ -2007,6 +2046,7 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       throw new Error('Tidak ditemukan video ataupun foto dari link TikTok ini.');
     } catch (e) {
       // Fallback ke yt-dlp jika scraper API gagal (khusus video)
+      logServiceEvent('TIKTOK', 'Fallback downloader used (yt-dlp)');
       const reqId = `tt_${Date.now()}`;
       startReactionProgress(sock, msg);
       let downloadedFilePath = null;
@@ -2035,9 +2075,13 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
         }
 
         await setFinalReaction(sock, msg, '✅');
+        commandExecutedSuccessfully = true;
       } catch (err2) {
         await setFinalReaction(sock, msg, '❌');
-        reply(`❌ Gagal memproses TikTok: ${e.message || err2.message}`);
+        const finalErr = err2 || e;
+        const classified = classifyError(finalErr, { platform: 'TikTok' });
+        logServiceError('TIKTOK', finalErr, q);
+        reply(getUserMessageForCategory(classified.category, { platform: 'TikTok' }));
       } finally {
         stopReaction(msg);
         deleteFileSafe(downloadedFilePath);
@@ -2144,8 +2188,16 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       } else {
         reply(text);
       }
+      commandExecutedSuccessfully = true;
     } catch (e) {
-      reply(`❌ Gagal mengambil profil: ${e.message}`);
+      const classified = classifyError(e, { platform: 'tiktok', action: 'stalk' });
+      if (classified.category === ERROR_CATEGORIES.CLOUDFLARE || String(e.message).includes('pembatasan')) {
+        reply('⚠️ Layanan profil TikTok sedang mengalami pembatasan. Silakan gunakan downloader TikTok dengan format .tt <url>.');
+      } else if (classified.category === ERROR_CATEGORIES.NOT_FOUND) {
+        reply(`🔍 User TikTok *@${q.replace(/^@/, '')}* tidak ditemukan. Pastikan username sudah benar.`);
+      } else {
+        reply(`❌ Gagal mengambil profil: ${getUserMessageForCategory(classified.category, { platform: 'TikTok', action: 'stalk' })}`);
+      }
     }
     return;
   }

@@ -55,6 +55,14 @@ ensureDirs([config.sessionDir, config.tempDir, config.downloadDir]);
 cleanDirectory(config.tempDir, 0);
 cleanDirectory(config.downloadDir, 0);
 
+// Jadwalkan pembersihan berkala file temporary yang berusia > 15 menit setiap 15 menit
+setInterval(() => {
+  try {
+    cleanDirectory(config.tempDir, 15 * 60 * 1000);
+    cleanDirectory(config.downloadDir, 15 * 60 * 1000);
+  } catch (_) {}
+}, 15 * 60 * 1000).unref();
+
 /**
  * Fungsi utama untuk menginisialisasi SikanBot
  */
