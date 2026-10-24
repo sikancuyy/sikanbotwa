@@ -40,7 +40,7 @@ function getEnvConfig(key, fallback = '') {
  */
 function formatRupiah(nominal) {
   const num = Math.round(Number(nominal) || 0);
-  return 'Rp ' + num.toLocaleString('id-ID');
+  return 'Rp' + num.toLocaleString('id-ID');
 }
 
 /**

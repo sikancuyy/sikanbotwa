@@ -697,16 +697,10 @@ async function handleMessage(sock, msg, startTime) {
       const qrisResult = await generateQris(parsedNominal);
       await sock.sendMessage(chatId, {
         image: qrisResult.imageBytes,
-        caption: `✅ *QRIS DINAMIS BERHASIL DIBUAT*\n\n` +
-          `🏪 *Merchant:* Rahmat Haikal (Sikancuyy Printing)\n` +
-          `💰 *Nominal:* ${formatRupiah(qrisResult.nominal)}\n` +
-          `⚡ *Metode:* GoPay Merchant (EMVCo Dynamic QRIS)\n\n` +
-          `📌 *Cara Pembayaran:*\n` +
-          `1. Buka aplikasi e-Wallet atau Mobile Banking Anda (GoPay, DANA, OVO, ShopeePay, BCA, Mandiri, BRI, dll).\n` +
-          `2. Buka menu *Scan QRIS* dan scan gambar QR di atas (atau unggah dari galeri HP).\n` +
-          `3. Nominal *${formatRupiah(qrisResult.nominal)}* akan otomatis terisi.\n` +
-          `4. Periksa nama merchant lalu konfirmasi pembayaran.\n\n` +
-          `💡 _Ingin membuat QRIS nominal lain? Ketik: *${config.prefix}qris <nominal>*_`
+        caption: `✅ QRIS DINAMIS \n\n` +
+          `🏪 Merchant: RAHMAT HAIKAL, DESAIN & KREATIF\n` +
+          `💰 Nominal: ${formatRupiah(qrisResult.nominal)}\n` +
+          `⚡ Metode: GoPay Merchant`
       }, { quoted: msg });
       await setFinalReaction(sock, msg, '✅');
       commandExecutedSuccessfully = true;
@@ -3291,16 +3285,10 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
       const qrisResult = await generateQris(parsedNominal);
       await sock.sendMessage(chatId, {
         image: qrisResult.imageBytes,
-        caption: `✅ *QRIS DINAMIS BERHASIL DIBUAT*\n\n` +
-          `🏪 *Merchant:* Rahmat Haikal (Sikancuyy Printing)\n` +
-          `💰 *Nominal:* ${formatRupiah(qrisResult.nominal)}\n` +
-          `⚡ *Metode:* GoPay Merchant (EMVCo Dynamic QRIS)\n\n` +
-          `📌 *Cara Pembayaran:*\n` +
-          `1. Buka aplikasi e-Wallet atau Mobile Banking Anda (GoPay, DANA, OVO, ShopeePay, BCA, Mandiri, BRI, dll).\n` +
-          `2. Buka menu *Scan QRIS* dan scan gambar QR di atas (atau unggah dari galeri HP).\n` +
-          `3. Nominal *${formatRupiah(qrisResult.nominal)}* akan otomatis terisi.\n` +
-          `4. Pastikan nama merchant sesuai dan konfirmasi pembayaran.\n\n` +
-          `💡 _Ingin membuat QRIS nominal lain? Ketik: *${config.prefix}qris <nominal>*_`
+        caption: `✅ QRIS DINAMIS \n\n` +
+          `🏪 Merchant: RAHMAT HAIKAL, DESAIN & KREATIF\n` +
+          `💰 Nominal: ${formatRupiah(qrisResult.nominal)}\n` +
+          `⚡ Metode: GoPay Merchant`
       }, { quoted: msg });
       await setFinalReaction(sock, msg, '✅');
       commandExecutedSuccessfully = true;
