@@ -15,6 +15,7 @@ const games = require('./lib/games');
 const scraper = require('./lib/scraper');
 const { generateQuoteChat, generateBratCustom, generateBratPc, generateStickerMeme, generateTTP, searchStickerly, searchTenor, getTelegramStickers, getRandomRyo } = require('./helpers/mediaHelper');
 const { mediaToWebp, webpToImage, webpToVideo, createAttpSticker, createTextSticker, createBratSticker, createBratVideoSticker } = require('./lib/sticker');
+const { generateQris, parseNominal, formatRupiah } = require('./helpers/qrisHelper');
 const { formatBytes, formatUptime, log, deleteFileSafe, getCpuUsagePercent, createProgressBar } = require('./utils');
 const { downloadVideo, downloadAudio, downloadYouTubeAudio, downloadYouTubeVideo } = require('./downloader');
 const { globalJobQueue } = require('./helpers/jobQueue');
@@ -125,7 +126,7 @@ const VALID_COMMANDS = new Set([
   'tts',
 
   // Tools
-  'calc', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'vro',
+  'calc', 'qrcode', 'qris', 'qrisdinamis', 'qrispay', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'vro',
 
   // Group Management
   'antilink', 'antispam', 'welcome', 'groupinfo', 'linkgroup', 'revoke',
@@ -141,6 +142,9 @@ const VALID_COMMANDS = new Set([
 
 // Sesi percakapan registrasi user (.daftar)
 const registrationSessions = new Map();
+
+// Sesi percakapan pembuatan QRIS dinamis (.qris)
+const qrisSessions = new Map();
 
 /**
  * Unduh buffer media dari objek pesan Baileys
@@ -669,6 +673,50 @@ async function handleMessage(sock, msg, startTime) {
     );
   }
 
+  // 5. Sesi interaktif input nominal QRIS Dinamis (.qris)
+  if (qrisSessions.has(sender) && !config.prefixes.some((p) => body.startsWith(p)) && body.trim().length > 0) {
+    const rawInput = body.trim().toLowerCase();
+    qrisSessions.delete(sender);
+
+    if (rawInput === 'batal' || rawInput === 'cancel') {
+      return reply('❌ Pembuatan QRIS telah dibatalkan.');
+    }
+
+    const parsedNominal = parseNominal(body);
+    if (!parsedNominal || parsedNominal <= 0) {
+      return reply(
+        `⚠️ Nominal tidak valid.\n\n` +
+        `Harap masukkan nominal yang benar (minimal Rp1.000).\n` +
+        `Contoh: *10000* atau *25k*\n\n` +
+        `_Atau gunakan perintah: *${config.prefix}qris <nominal>*_`
+      );
+    }
+
+    await startProcessing(sock, msg);
+    try {
+      const qrisResult = await generateQris(parsedNominal);
+      await sock.sendMessage(chatId, {
+        image: qrisResult.imageBytes,
+        caption: `✅ *QRIS DINAMIS BERHASIL DIBUAT*\n\n` +
+          `🏪 *Merchant:* Rahmat Haikal (Sikancuyy Printing)\n` +
+          `💰 *Nominal:* ${formatRupiah(qrisResult.nominal)}\n` +
+          `⚡ *Metode:* GoPay Merchant (EMVCo Dynamic QRIS)\n\n` +
+          `📌 *Cara Pembayaran:*\n` +
+          `1. Buka aplikasi e-Wallet atau Mobile Banking Anda (GoPay, DANA, OVO, ShopeePay, BCA, Mandiri, BRI, dll).\n` +
+          `2. Buka menu *Scan QRIS* dan scan gambar QR di atas (atau unggah dari galeri HP).\n` +
+          `3. Nominal *${formatRupiah(qrisResult.nominal)}* akan otomatis terisi.\n` +
+          `4. Periksa nama merchant lalu konfirmasi pembayaran.\n\n` +
+          `💡 _Ingin membuat QRIS nominal lain? Ketik: *${config.prefix}qris <nominal>*_`
+      }, { quoted: msg });
+      await setFinalReaction(sock, msg, '✅');
+      commandExecutedSuccessfully = true;
+      return;
+    } catch (err) {
+      console.error('[QRIS Session Error]', err);
+      return reply(`❌ Gagal membuat QRIS: ${err.message}`);
+    }
+  }
+
   // Cek Prefix
   const matchedPrefix = config.prefixes.find((p) => body.startsWith(p));
   if (!matchedPrefix) {
@@ -1132,6 +1180,11 @@ async function handleMessage(sock, msg, startTime) {
     'bcastuser': 'brouser',
     // Tools
     'qr': 'qrcode',
+    'qris': 'qris',
+    'qrisdinamis': 'qris',
+    'qrispay': 'qris',
+    'payqris': 'qris',
+    'gopayqris': 'qris',
     'short': 'shorturl',
     'tr': 'translate',
     'ss': 'ssweb',
@@ -1727,11 +1780,41 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   }
 
   if (command === 'donate') {
+    // Jika user langsung menyertakan nominal donasi (misal .donate 10000 atau .donate 25k)
+    const donateNominal = parseNominal(q);
+    if (donateNominal && donateNominal > 0) {
+      await startProcessing(sock, msg);
+      try {
+        const qrisResult = await generateQris(donateNominal);
+        commandExecutedSuccessfully = true;
+        await setFinalReaction(sock, msg, '✅');
+        return await sock.sendMessage(chatId, {
+          image: qrisResult.imageBytes,
+          caption: `☕ *DONASI VIA QRIS DINAMIS*\n\n` +
+            `Terima kasih banyak atas niat baik Anda untuk mendukung operasional SikanBot!\n\n` +
+            `🏪 *Penerima:* ${config.donate.name} (GoPay Merchant)\n` +
+            `💰 *Nominal Donasi:* ${formatRupiah(qrisResult.nominal)}\n\n` +
+            `📌 *Cara Pembayaran:*\n` +
+            `1. Buka aplikasi e-Wallet atau M-Banking (GoPay, DANA, OVO, ShopeePay, BCA, Mandiri, BRI, dll).\n` +
+            `2. Scan gambar QRIS di atas.\n` +
+            `3. Nominal *${formatRupiah(qrisResult.nominal)}* akan otomatis terisi.\n` +
+            `4. Konfirmasi pembayaran.\n\n` +
+            `Semoga rezeki Anda dilipatgandakan! 🙏`
+        }, { quoted: msg });
+      } catch (err) {
+        console.error('[Donate QRIS Error]', err);
+      }
+    }
+
+    commandExecutedSuccessfully = true;
     return reply(`☕ *DONASI & DUKUNGAN*\n\n` +
       `Bantu server bot tetap menyala dengan donasi seikhlasnya:\n` +
       `A.n *${config.donate.name}*\n` +
       `* DANA: *${config.donate.dana}*\n` +
-      `* GoPay: *${config.donate.gopay}*\n\n\n` +
+      `* GoPay: *${config.donate.gopay}*\n` +
+      `* Saweria: ${config.donate.saweria}\n\n` +
+      `💡 *Bisa juga via QRIS Dinamis:* Ketik *${config.prefix}qris <nominal>*\n` +
+      `Contoh: *${config.prefix}qris 10000* atau *${config.prefix}donate 10000*\n\n` +
       `Terima kasih atas dukungan Anda! 🙏`);
   }
 
@@ -3151,15 +3234,79 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   }
 
   if (command === 'qrcode') {
-    if (!q) return reply(`Masukkan teks atau link URL untuk dijadikan QR Code!\nContoh: *${config.prefix}qrcode https://google.com*`);
+    // Jika user mengetik perintah singkat .qr <nominal> (misal: .qr 5000 / .qr 10000 seperti di sikanqris)
+    const nominalCandidate = parseNominal(q);
+    if (nominalCandidate && nominalCandidate >= 1000 && !q.includes('/') && !q.includes('http') && !q.includes('.com') && !q.includes('.id')) {
+      command = 'qris';
+      // Lanjut diproses oleh block command qris di bawah
+    } else {
+      if (!q) return reply(`Masukkan teks atau link URL untuk dijadikan QR Code!\nContoh: *${config.prefix}qrcode https://google.com*\n\n💡 _Untuk membuat QRIS Dinamis ber-nominal: *${config.prefix}qris 10000*_`);
+      try {
+        const qrBuffer = await scraper.createQrCode(q);
+        await sock.sendMessage(chatId, {
+          image: qrBuffer,
+          caption: `📱 *QR Code Generator*\n\nKonten: ${q}`
+        }, { quoted: msg });
+        commandExecutedSuccessfully = true;
+      } catch (e) {
+        reply(`❌ Gagal membuat QR Code: ${e.message}`);
+      }
+      return;
+    }
+  }
+
+  if (command === 'qris' || command === 'qrisdinamis' || command === 'qrispay') {
+    if (!q) {
+      qrisSessions.set(sender, { timestamp: Date.now() });
+      commandExecutedSuccessfully = true;
+      return reply(
+        `🔳 *QRIS GENERATOR DINAMIS*\n\n` +
+        `🏪 *Merchant:* Rahmat Haikal (Sikancuyy Printing)\n` +
+        `⚡ *Metode:* GoPay Merchant (EMVCo Dynamic QRIS)\n\n` +
+        `💰 *Silakan masukkan nominal rupiah yang ingin dibuat:*\n` +
+        `• Balas langsung pesan ini dengan nominal (Contoh: *10000* atau *25k*)\n` +
+        `• Atau gunakan perintah cepat:\n` +
+        `  *${config.prefix}qris 5000*\n` +
+        `  *${config.prefix}qris 10000*\n` +
+        `  *${config.prefix}qris 25000*\n` +
+        `  *${config.prefix}qris 50000*\n\n` +
+        `_Ketik *batal* untuk membatalkan._`
+      );
+    }
+
+    const parsedNominal = parseNominal(q);
+    if (!parsedNominal || parsedNominal <= 0) {
+      return reply(
+        `⚠️ Nominal tidak valid.\n\n` +
+        `Harap masukkan angka nominal yang benar (minimal Rp1.000).\n\n` +
+        `*Contoh Penggunaan:*\n` +
+        `• *${config.prefix}qris 10000*\n` +
+        `• *${config.prefix}qris 25k*\n` +
+        `• *${config.prefix}qris 50.000*`
+      );
+    }
+
+    await startProcessing(sock, msg);
     try {
-      const qrBuffer = await scraper.createQrCode(q);
+      const qrisResult = await generateQris(parsedNominal);
       await sock.sendMessage(chatId, {
-        image: qrBuffer,
-        caption: `📱 *QR Code Generator*\n\nKonten: ${q}`
+        image: qrisResult.imageBytes,
+        caption: `✅ *QRIS DINAMIS BERHASIL DIBUAT*\n\n` +
+          `🏪 *Merchant:* Rahmat Haikal (Sikancuyy Printing)\n` +
+          `💰 *Nominal:* ${formatRupiah(qrisResult.nominal)}\n` +
+          `⚡ *Metode:* GoPay Merchant (EMVCo Dynamic QRIS)\n\n` +
+          `📌 *Cara Pembayaran:*\n` +
+          `1. Buka aplikasi e-Wallet atau Mobile Banking Anda (GoPay, DANA, OVO, ShopeePay, BCA, Mandiri, BRI, dll).\n` +
+          `2. Buka menu *Scan QRIS* dan scan gambar QR di atas (atau unggah dari galeri HP).\n` +
+          `3. Nominal *${formatRupiah(qrisResult.nominal)}* akan otomatis terisi.\n` +
+          `4. Pastikan nama merchant sesuai dan konfirmasi pembayaran.\n\n` +
+          `💡 _Ingin membuat QRIS nominal lain? Ketik: *${config.prefix}qris <nominal>*_`
       }, { quoted: msg });
-    } catch (e) {
-      reply(`❌ Gagal membuat QR Code: ${e.message}`);
+      await setFinalReaction(sock, msg, '✅');
+      commandExecutedSuccessfully = true;
+    } catch (err) {
+      console.error('[QRIS Error]', err);
+      reply(`❌ Gagal membuat QRIS: ${err.message}`);
     }
     return;
   }

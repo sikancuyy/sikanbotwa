@@ -54,6 +54,7 @@ function getGeneralMenu() {
 ├ ${p}script
 ├ ${p}infobot
 ├ ${p}donate
+├ ${p}qris [nominal]
 ╰────────────────`;
 }
 
@@ -170,6 +171,7 @@ function getToolsMenu() {
 ├ ${p}calc
 ├ ${p}pdf
 ├ ${p}qrcode
+├ ${p}qris <nominal>
 ├ ${p}shorturl
 ├ ${p}translate
 ├ ${p}ssweb

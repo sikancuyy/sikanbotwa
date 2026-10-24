@@ -71,5 +71,16 @@ module.exports = {
     dana: '082267034994',
     gopay: '082267034994',
     saweria: 'https://saweria.co/sikancuyy'
+  },
+
+  // Konfigurasi QRIS Generator Dinamis (GoPay Merchant / Midtrans)
+  qris: {
+    mode: process.env.QRIS_MODE || 'GOPAY_STATIC',
+    staticString: process.env.GOPAY_QRIS_STATIC_STRING || '00020101021126610014COM.GO-JEK.WWW01189360091434158140490210G4158140490303UMI51440014ID.CO.QRIS.WWW0215ID10254557413020303UMI5204899953033605802ID5925RAHMAT HAIKAL, Desain & K6010ACEH UTARA61052439462070703A0163047973',
+    framePath: path.join(__dirname, 'assets', 'bqr.png'),
+    midtransServerKey: process.env.MIDTRANS_SERVER_KEY || '',
+    midtransIsProduction: process.env.MIDTRANS_IS_PRODUCTION === 'true',
+    apiUrl: process.env.QRIS_API_URL || '',
+    apiKey: process.env.QRIS_API_KEY || ''
   }
 };
