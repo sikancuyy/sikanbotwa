@@ -382,15 +382,16 @@ async function handleMessage(sock, msg, startTime) {
     }
   }
 
-  const senderNumber = userNumber; // Format standar '628xxxxxxxxxx' numerik murni atau null
-  const botNumber = (sock.user?.id || '').split(':')[0].replace(/[^0-9]/g, '');
+  const botNumber = (sock.user?.id || sock.authState?.creds?.me?.id || '').split(':')[0].replace(/[^0-9]/g, '');
   const ownerNum = config.owner.number.replace(/[^0-9]/g, '');
   const allOwnerNumbers = Array.isArray(config.owner.numbers)
     ? config.owner.numbers.map((n) => n.replace(/[^0-9]/g, ''))
     : [ownerNum];
 
-  const sender = userNumber
-    ? `${userNumber}@s.whatsapp.net`
+  const senderNumber = userNumber || (msg.key.fromMe ? (botNumber || ownerNum) : null); // Format standar '628xxxxxxxxxx' numerik murni atau null
+
+  const sender = senderNumber
+    ? `${senderNumber}@s.whatsapp.net`
     : (msg.key.fromMe
       ? (botNumber ? `${botNumber}@s.whatsapp.net` : `${ownerNum}@s.whatsapp.net`)
       : (isGroup ? (msg.key.participant || msg.participant || '') : chatId));

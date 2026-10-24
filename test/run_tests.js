@@ -2173,8 +2173,8 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
-  // 80. Anti-Self-Loop: Pesan fromMe tanpa prefix atau echo balasan bot diabaikan
-  await itAsync('80. Anti-Self-Loop: Pesan keluar (fromMe) tanpa prefix tidak memicu auto-download atau respon loop', async () => {
+  // 80. Anti-Self-Loop & Owner Direct Command: Pesan fromMe dengan prefix tetap dieksekusi, tanpa prefix diabaikan
+  await itAsync('80. Anti-Self-Loop & Owner Direct Command: Pesan fromMe dengan prefix tetap dieksekusi, tanpa prefix diabaikan', async () => {
     processingStatus.resetProcessing();
     const sentReplies = [];
     const mockSock = {
@@ -2186,6 +2186,7 @@ async function runAllTests() {
       user: { id: '6282277256004:1@s.whatsapp.net' }
     };
 
+    // 1. Pesan fromMe tanpa prefix (misal URL atau chat biasa) tidak boleh memicu auto-download atau looping
     const selfMediaUrlMsg = {
       key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_SELF_ECHO_777', fromMe: true },
       message: { conversation: 'https://vt.tiktok.com/ZSbNrSSqc/' }
@@ -2193,6 +2194,48 @@ async function runAllTests() {
 
     await handleMessage(mockSock, selfMediaUrlMsg, Date.now());
     assert.strictEqual(sentReplies.length, 0, 'Pesan fromMe tanpa prefix tidak boleh memicu auto-download atau looping');
+
+    // 2. Pesan dari pemilik bot langsung (fromMe: true) DENGAN prefix .ping harus tetap dieksekusi
+    sentReplies.length = 0;
+    processingStatus.resetProcessing();
+    const selfPingMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_SELF_PING_888', fromMe: true },
+      message: { conversation: '.ping' }
+    };
+
+    await handleMessage(mockSock, selfPingMsg, Date.now());
+    const pingReply = sentReplies.find((m) => m.content?.text && (m.content.text.includes('Pong!') || m.content.text.includes('Kecepatan Respon')));
+    assert.ok(pingReply, 'Pesan command berprefix dari pemilik bot langsung (fromMe: true) harus berhasil dieksekusi');
+
+    // 3. Pesan dari pemilik bot langsung (fromMe: true) DENGAN prefix .menu di grup harus tetap dieksekusi
+    sentReplies.length = 0;
+    processingStatus.resetProcessing();
+    const selfMenuMsg = {
+      key: { remoteJid: '1203630283928192@g.us', id: 'TEST_SELF_MENU_999', fromMe: true },
+      message: { conversation: '.menu' }
+    };
+
+    await handleMessage(mockSock, selfMenuMsg, Date.now());
+    const menuReply = sentReplies.find((m) => m.content?.text && m.content.text.includes('MENU UTAMA'));
+    assert.ok(menuReply, 'Pesan .menu dari pemilik bot di grup (fromMe: true) harus berhasil dieksekusi');
+
+    // 4. Validasi shouldIgnoreMessage helper
+    const { shouldIgnoreMessage } = require('../helpers/messageDeduplicator');
+    assert.strictEqual(shouldIgnoreMessage(selfPingMsg, ['.', '/', '!']), false, 'shouldIgnoreMessage tidak boleh mengabaikan command fromMe berprefix');
+    assert.strictEqual(shouldIgnoreMessage(selfMediaUrlMsg, ['.', '/', '!']), true, 'shouldIgnoreMessage harus mengabaikan chat fromMe tanpa prefix');
+
+    // 5. Ephemeral wrapped command fromMe
+    const selfEphemeralMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_SELF_EPH_101', fromMe: true },
+      message: {
+        ephemeralMessage: {
+          message: {
+            extendedTextMessage: { text: '.ping' }
+          }
+        }
+      }
+    };
+    assert.strictEqual(shouldIgnoreMessage(selfEphemeralMsg, ['.', '/', '!']), false, 'shouldIgnoreMessage harus mendukung pesan ephemeral command fromMe');
 
     processingStatus.resetProcessing();
   });

@@ -317,7 +317,9 @@ async function startBot() {
 
   // Pantau pesan masuk dengan filter anti-duplikasi & auto-ack
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
+    // Baileys mengirim pesan masuk dari user lain dengan type 'notify',
+    // dan pesan sinkronisasi/perintah dari WhatsApp pemilik bot langsung (fromMe) dengan type 'append'
+    if (type !== 'notify' && type !== 'append') return;
 
     for (const msg of messages) {
       // Filter terpadu: abaikan jika pesan sudah pernah diproses, pesan stale/lama, atau pesan echo dari bot sendiri

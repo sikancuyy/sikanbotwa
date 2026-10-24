@@ -166,21 +166,37 @@ function shouldIgnoreMessage(msg, prefixes = ['.', '/', '!']) {
     return true;
   }
 
-  // Jika pesan fromMe (dikirim dari akun bot WhatsApp sendiri):
+  // Jika pesan fromMe (dikirim dari akun bot WhatsApp sendiri / pemilik bot):
   // Hanya proses jika pesan tersebut secara eksplisit merupakan command (diawali prefix).
   // Pesan teks biasa / URL / reaksi dari fromMe TIDAK boleh diproses agar tidak terjadi infinite loop atau kirim ulang.
   if (msg.key?.fromMe) {
-    const rawMsg = msg.message;
+    let rawMsg = msg.message;
+    while (
+      rawMsg?.ephemeralMessage ||
+      rawMsg?.viewOnceMessage ||
+      rawMsg?.viewOnceMessageV2 ||
+      rawMsg?.viewOnceMessageV2Extension ||
+      rawMsg?.documentWithCaptionMessage
+    ) {
+      rawMsg = (
+        rawMsg.ephemeralMessage?.message ||
+        rawMsg.viewOnceMessage?.message ||
+        rawMsg.viewOnceMessageV2?.message ||
+        rawMsg.viewOnceMessageV2Extension?.message ||
+        rawMsg.documentWithCaptionMessage?.message
+      );
+    }
+
     const body = (
-      rawMsg.conversation ||
-      rawMsg.extendedTextMessage?.text ||
-      rawMsg.imageMessage?.caption ||
-      rawMsg.videoMessage?.caption ||
-      rawMsg.documentMessage?.caption ||
+      rawMsg?.conversation ||
+      rawMsg?.extendedTextMessage?.text ||
+      rawMsg?.imageMessage?.caption ||
+      rawMsg?.videoMessage?.caption ||
+      rawMsg?.documentMessage?.caption ||
       ''
     ).trim();
 
-    const isCommand = prefixes.some((p) => body.startsWith(p));
+    const isCommand = Array.isArray(prefixes) && prefixes.some((p) => body.startsWith(p));
     if (!isCommand) {
       return true;
     }
