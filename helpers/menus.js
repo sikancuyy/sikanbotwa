@@ -177,7 +177,7 @@ function getToolsMenu() {
 ├ ${p}ssweb
 ├ ${p}ocr
 ├ ${p}weather
-├ ${p}vro (buka foto/video view once)
+├ ${p}rvo / ${p}vro (buka foto/video view once)
 ╰────────────────`;
 }
 

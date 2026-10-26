@@ -1894,8 +1894,8 @@ async function runAllTests() {
     processingStatus.resetProcessing();
   });
 
-  // 76. Fitur .vro (Pengganti View Once): Pembatasan akses Admin/Owner, validasi reply, deteksi View Once foto & video
-  await itAsync('76. Fitur .vro: Pembatasan akses Admin/Owner dan validasi reply media View Once', async () => {
+  // 76. Fitur .vro & .rvo: Akses umum (semua user) dan validasi reply media View Once
+  await itAsync('76. Fitur .vro & .rvo: Akses umum dan validasi reply media View Once', async () => {
     processingStatus.resetProcessing();
     const sentMessages = [];
     const reactions = [];
@@ -1912,39 +1912,38 @@ async function runAllTests() {
       sendPresenceUpdate: async () => {}
     };
 
-    // 1. .vro oleh user biasa (bukan Admin / Owner) harus ditolak
-    const mockMsgNonAdmin = {
-      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_VRO_DENIED', fromMe: false },
+    // 1. .vro oleh user biasa (publik) dapat diakses, jika tanpa reply akan meminta reply
+    const mockMsgGeneralUser = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_VRO_PUBLIC', fromMe: false },
       message: { conversation: '.vro' }
     };
-    await handleMessage(mockSock, mockMsgNonAdmin);
+    await handleMessage(mockSock, mockMsgGeneralUser);
 
-    const errDenied = sentMessages.find((m) => m.content?.text && m.content.text.includes('Perintah ini hanya dapat digunakan oleh Admin dan Owner!'));
-    assert.strictEqual(Boolean(errDenied), true, 'Harus menolak user non-admin dan non-owner');
-    assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ saat ditolak hak akses');
+    const errNoReplyGeneral = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
+    assert.strictEqual(Boolean(errNoReplyGeneral), true, 'User biasa dapat mengakses dan bot meminta reply foto/video View Once');
+    assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ saat parameter/reply belum diberikan');
 
-    // 2. .vro oleh Owner tanpa me-reply pesan apapun
+    // 2. .rvo oleh user biasa tanpa me-reply pesan apapun
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
-    const mockMsgNoReply = {
-      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_VRO_NO_REPLY', fromMe: false },
-      message: { conversation: '.vro' }
+    const mockMsgAliasRvoUser = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_PUBLIC', fromMe: false },
+      message: { conversation: '.rvo' }
     };
-    await handleMessage(mockSock, mockMsgNoReply);
+    await handleMessage(mockSock, mockMsgAliasRvoUser);
 
-    const errNoReply = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
-    assert.strictEqual(Boolean(errNoReply), true, 'Harus meminta reply pesan View Once bagi Owner');
-    assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika tidak ada reply');
+    const errAliasNoReply = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
+    assert.strictEqual(Boolean(errAliasNoReply), true, 'Alias .rvo untuk user umum harus diteruskan ke handler View Once');
 
-    // 3. .vro oleh Owner me-reply pesan teks biasa (bukan View Once)
+    // 3. .vro oleh user me-reply pesan teks biasa (bukan View Once)
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
     const mockMsgTextReply = {
-      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_VRO_TEXT_REPLY', fromMe: false },
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_VRO_TEXT_REPLY', fromMe: false },
       message: {
         extendedTextMessage: {
           text: '.vro',
@@ -1962,16 +1961,16 @@ async function runAllTests() {
     assert.strictEqual(Boolean(errNotVo), true, 'Harus menolak jika pesan bukan View Once');
     assert.strictEqual(reactions[reactions.length - 1].text, '❌', 'Reaksi harus ❌ jika bukan View Once');
 
-    // 4. .vro oleh Owner me-reply foto biasa (non-View Once)
+    // 4. .rvo oleh user me-reply foto biasa (non-View Once)
     sentMessages.length = 0;
     reactions.length = 0;
     processingStatus.resetProcessing();
 
     const mockMsgNormalImage = {
-      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_VRO_NORMAL_IMG', fromMe: false },
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'MSG_RVO_NORMAL_IMG', fromMe: false },
       message: {
         extendedTextMessage: {
-          text: '.vro',
+          text: '.rvo',
           contextInfo: {
             quotedMessage: {
               imageMessage: {
@@ -1988,21 +1987,7 @@ async function runAllTests() {
     const errNormalImg = sentMessages.find((m) => m.content?.text && m.content.text.includes('Pesan yang di-reply bukan View Once.'));
     assert.strictEqual(Boolean(errNormalImg), true, 'Harus menolak jika foto bukan View Once');
 
-    // 5. Alias .rvo tetap berfungsi dan diarahkan ke .vro untuk Owner
-    sentMessages.length = 0;
-    reactions.length = 0;
-    processingStatus.resetProcessing();
-
-    const mockMsgAliasRvo = {
-      key: { remoteJid: `${config.owner.number}@s.whatsapp.net`, id: 'MSG_RVO_ALIAS', fromMe: false },
-      message: { conversation: '.rvo' }
-    };
-    await handleMessage(mockSock, mockMsgAliasRvo);
-
-    const errAliasNoReply = sentMessages.find((m) => m.content?.text && m.content.text.includes('Reply foto/video View Once terlebih dahulu.'));
-    assert.strictEqual(Boolean(errAliasNoReply), true, 'Alias .rvo harus diteruskan ke handler View Once');
-
-    // 6. Perintah usang .kan ditolak / tidak dikenali
+    // 5. Perintah usang .kan ditolak / tidak dikenali
     sentMessages.length = 0;
     processingStatus.resetProcessing();
     const mockMsgOldKan = {
@@ -2204,7 +2189,7 @@ async function runAllTests() {
     };
 
     await handleMessage(mockSock, selfPingMsg, Date.now());
-    const pingReply = sentReplies.find((m) => m.content?.text && (m.content.text.includes('Pong!') || m.content.text.includes('Kecepatan Respon')));
+    const pingReply = sentReplies.find((m) => m.content?.text && /pong/i.test(m.content.text));
     assert.ok(pingReply, 'Pesan command berprefix dari pemilik bot langsung (fromMe: true) harus berhasil dieksekusi');
 
     // 3. Pesan dari pemilik bot langsung (fromMe: true) DENGAN prefix .menu di grup harus tetap dieksekusi
@@ -2216,12 +2201,16 @@ async function runAllTests() {
     };
 
     await handleMessage(mockSock, selfMenuMsg, Date.now());
-    const menuReply = sentReplies.find((m) => m.content?.text && m.content.text.includes('MENU UTAMA'));
+    const menuReply = sentReplies.find((m) => m.content?.text && m.content.text.includes('MENU') && m.content.text.includes('.inmenu'));
     assert.ok(menuReply, 'Pesan .menu dari pemilik bot di grup (fromMe: true) harus berhasil dieksekusi');
 
     // 4. Validasi shouldIgnoreMessage helper
     const { shouldIgnoreMessage } = require('../helpers/messageDeduplicator');
-    assert.strictEqual(shouldIgnoreMessage(selfPingMsg, ['.', '/', '!']), false, 'shouldIgnoreMessage tidak boleh mengabaikan command fromMe berprefix');
+    const freshSelfPingMsg = {
+      key: { remoteJid: '6281234567890@s.whatsapp.net', id: 'TEST_SELF_PING_FRESH', fromMe: true },
+      message: { conversation: '.ping' }
+    };
+    assert.strictEqual(shouldIgnoreMessage(freshSelfPingMsg, ['.', '/', '!']), false, 'shouldIgnoreMessage tidak boleh mengabaikan command fromMe berprefix');
     assert.strictEqual(shouldIgnoreMessage(selfMediaUrlMsg, ['.', '/', '!']), true, 'shouldIgnoreMessage harus mengabaikan chat fromMe tanpa prefix');
 
     // 5. Ephemeral wrapped command fromMe

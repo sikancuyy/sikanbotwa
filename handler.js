@@ -126,7 +126,7 @@ const VALID_COMMANDS = new Set([
   'tts',
 
   // Tools
-  'calc', 'qrcode', 'qris', 'qrisdinamis', 'qrispay', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'vro',
+  'calc', 'qrcode', 'qris', 'qrisdinamis', 'qrispay', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'pdf', 'vro', 'rvo', 'viewonce',
 
   // Group Management
   'antilink', 'antispam', 'welcome', 'groupinfo', 'linkgroup', 'revoke',
@@ -1242,7 +1242,7 @@ async function handleMessage(sock, msg, startTime) {
     'animebrat', 'animebrat2', 'qc', 'qc2', 'smeme', 'emojigif', 'gifsticker', 'stly',
     'stickerlysearch', 'telestick', 'tenor', 'stickersearch', 'ryo',
     // Tools
-    'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc',
+    'pdf', 'qrcode', 'shorturl', 'translate', 'ssweb', 'ocr', 'weather', 'calc', 'vro', 'rvo', 'viewonce',
     // AI
     'ai', 'ask', 'imagine', 'summarize',
     // TTS
@@ -3372,16 +3372,6 @@ ${u?.premium === 1 ? `├ Kedaluwarsa: ${premExp}\n` : ''}├ Commands   : ${tot
   }
 
   if (command === 'vro') {
-    if (isGroup) {
-      await loadGroupInfo();
-    }
-    const isBotAdminUser = Boolean(userDb && typeof userDb.isBotAdmin === 'function' && userDb.isBotAdmin(sender));
-    const isUserAdmin = isAdmin || isBotAdminUser;
-
-    if (!isOwner && !isUserAdmin) {
-      return reply('❌ Perintah ini hanya dapat digunakan oleh Admin dan Owner!');
-    }
-
     if (!rawQuotedMessage) {
       return reply('❌ Reply foto/video View Once terlebih dahulu.');
     }
